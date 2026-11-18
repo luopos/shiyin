@@ -82,8 +82,8 @@ native/
 
 ## 编译
 
-需要 JDK 17、Android SDK（build-tools 含 `aapt2`/`d8`/`zipalign`）、Python 3。
-脚本支持用环境变量覆盖默认路径：
+只需要 JDK 17、Android SDK（build-tools 含 `aapt2`/`d8`/`zipalign`/`apksigner`）和 Python 3，
+**不需要 Gradle，也不需要任何外部 jar**。脚本支持用环境变量覆盖默认路径：
 
 ```bash
 export ANDROID_SDK_ROOT=/path/to/android-sdk
@@ -93,14 +93,24 @@ export JAVA_HOME=/path/to/jdk-17
 
 cd native
 bash build.sh
-# 产物：build/signed/aligned-aligned-debugSigned.apk
+# 产物：build/signed/shiyin.apk
 ```
 
-签名用本机 `~/.android/debug.keystore`（`uber-apk-signer`）。要发布就换成自己的 keystore。
+签名默认用 `~/.android/debug.keystore`，不存在会自动生成一个，保证克隆下来直接能编。
+要打正式包就指定自己的 keystore：
 
-> 注：`d8.bat` 在 Git Bash 下会按 Windows 工作目录解析相对路径，容易报
-> `NoSuchFileException`。脚本改成先 `jar cf program.jar`，再用
-> `java -cp d8.jar com.android.tools.r8.D8` 传绝对路径，绕开这个坑。
+```bash
+export SHIYIN_KEYSTORE=/path/to/release.jks
+export SHIYIN_KEYSTORE_PASS=******
+export SHIYIN_KEYSTORE_ALIAS=your-alias
+```
+
+> 两个踩过的坑，脚本里已经绕开：
+> 1. `d8.bat` 在 Git Bash 下按 Windows 工作目录解析相对路径，会报
+>    `NoSuchFileException`。改成先 `jar cf program.jar`，再用
+>    `java -cp d8.jar com.android.tools.r8.D8` 传绝对路径。
+> 2. `core.autocrlf=true` 会把 `.sh` 提交成 CRLF，到 Linux 上直接跑不起来。
+>    仓库里加了 `.gitattributes` 强制 shell/源码用 LF。
 
 ## 测试
 
@@ -108,10 +118,10 @@ bash build.sh
 
 ```bash
 cd native
-bash build.sh            # 先出主包（测试需要主包的 classes）
+bash build.sh            # 先出主包（测试需要主包的 classes 与 program.jar）
 bash tests/build.sh      # 出 tests/build/test.apk
 
-adb install -r build/signed/aligned-aligned-debugSigned.apk
+adb install -r build/signed/shiyin.apk
 adb install -r tests/build/test.apk
 adb shell am instrument -w com.shiyin.test/com.shiyin.test.PlaybackTest
 ```
