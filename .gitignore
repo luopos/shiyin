@@ -8,6 +8,18 @@ tests/build/
 *.jar
 !libs/jsoup.jar
 
+# 本地签名、凭据与发布产物
+.env
+.env.*
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+.git-credentials
+release/
+
 # 本地工具链
 local.properties
 .gradle/

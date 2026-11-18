@@ -1,0 +1,185 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build signed APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          test -n "$sdk" || { echo "Android SDK is unavailable" >&2; exit 1; }
+          manager="$sdk/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$manager" || { echo "sdkmanager is unavailable" >&2; exit 1; }
+          "$manager" --install 'build-tools;34.0.0' 'platforms;android-33'
+          {
+            echo "ANDROID_SDK_ROOT=$sdk"
+            echo "ANDROID_BUILD_TOOLS=$sdk/build-tools/34.0.0"
+            echo "ANDROID_PLATFORM=$sdk/platforms/android-33"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore signing key
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SHIYIN_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.SHIYIN_KEYSTORE_PASS }}
+          KEYSTORE_ALIAS: ${{ secrets.SHIYIN_KEYSTORE_ALIAS }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+          required = ('KEYSTORE_BASE64', 'KEYSTORE_PASSWORD', 'KEYSTORE_ALIAS')
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit('Missing repository signing secrets: ' + ', '.join(missing))
+          key = Path(os.environ['RUNNER_TEMP']) / 'shiyin-signing.keystore'
+          key.write_bytes(base64.b64decode(os.environ['KEYSTORE_BASE64'], validate=True))
+          key.chmod(0o600)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as out:
+              out.write('SHIYIN_KEYSTORE=' + str(key) + '\n')
+          PY
+
+      - name: Build app and test APK
+        shell: bash
+        env:
+          SHIYIN_KEYSTORE_PASS: ${{ secrets.SHIYIN_KEYSTORE_PASS }}
+          SHIYIN_KEYSTORE_ALIAS: ${{ secrets.SHIYIN_KEYSTORE_ALIAS }}
+        run: |
+          set -euo pipefail
+          bash build.sh
+          bash tests/build.sh
+
+      - name: Verify and package APK
+        id: package
+        shell: bash
+        env:
+          EXPECTED_SIGNER_SHA256: 8202d011d16c7113bbe97e4fa3fa57830a007586210ce4471c99db289cb60ed6
+        run: |
+          set -euo pipefail
+          "$ANDROID_BUILD_TOOLS/apksigner" verify --verbose --print-certs build/signed/shiyin.apk > "$RUNNER_TEMP/shiyin-signature.txt"
+          cat "$RUNNER_TEMP/shiyin-signature.txt"
+          "$ANDROID_BUILD_TOOLS/zipalign" -c -p 4 build/signed/shiyin.apk
+          python3 - <<'PY'
+          import hashlib
+          import os
+          import re
+          import shutil
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          android = '{http://schemas.android.com/apk/res/android}'
+          manifest = ET.parse('AndroidManifest.xml').getroot()
+          version = manifest.attrib[android + 'versionName']
+          if not re.fullmatch(r'[0-9]+(?:\.[0-9]+)*(?:-[A-Za-z0-9.]+)?', version):
+              raise SystemExit('Unsafe version name')
+          if manifest.attrib.get('package') != 'com.shiyin.app':
+              raise SystemExit('Unexpected package name')
+          if os.environ['GITHUB_REF_TYPE'] == 'tag' and os.environ['GITHUB_REF_NAME'] != 'v' + version:
+              raise SystemExit('Release tag must match Android versionName')
+          certs = (Path(os.environ['RUNNER_TEMP']) / 'shiyin-signature.txt').read_text()
+          if not re.search(r'certificate SHA-256 digest: ' + re.escape(os.environ['EXPECTED_SIGNER_SHA256']) + r'\b', certs):
+              raise SystemExit('Signing certificate changed; refusing incompatible APK')
+          release = Path('release')
+          release.mkdir(exist_ok=True)
+          apk = release / ('shiyin-' + version + '.apk')
+          shutil.copyfile('build/signed/shiyin.apk', apk)
+          digest = hashlib.sha256(apk.read_bytes()).hexdigest()
+          (release / 'SHA256SUMS').write_text(digest + '  ' + apk.name + '\n', encoding='utf-8')
+          notes = '\n'.join([
+              '## 拾音 ' + version,
+              '',
+              '- 纯原生 Android 客户端，支持 Android 7.0 及以上。',
+              '- 四个内置源、后台播放、系统媒体卡片、每页 50 集目录和跨页连播。',
+              '- 由 GitHub Actions 从本标签源码自动构建，沿用已有安装包签名。',
+              '- 下载 APK 安装；SHA256SUMS 可用于核对文件完整性。',
+              '',
+              '### 已知限制',
+              '- 部分源仍需完整请求目录后本地分页，第三方接口可用性不作保证。',
+              '- 旧源含 HTTP 连接；请勿在全部源搜索中粘贴含私密令牌的 RSS 链接。',
+              '- 当前沿用开发签名；云端只编译测试包，不执行模拟器回归。',
+              '',
+              '构建提交：`' + os.environ['GITHUB_SHA'] + '`',
+              '',
+              'SHA-256：`' + digest + '`',
+              ''
+          ])
+          (release / 'RELEASE_NOTES.md').write_text(notes, encoding='utf-8')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write('version=' + version + '\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
+              out.write(notes)
+          PY
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: shiyin-${{ steps.package.outputs.version }}-${{ github.sha }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove signing material
+        if: always()
+        shell: bash
+        run: rm -f -- "$RUNNER_TEMP/shiyin-signing.keystore"
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download verified APK
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: shiyin-*-${{ github.sha }}
+          path: release
+          merge-multiple: true
+
+      - name: Publish APK and checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release/*.apk release/SHA256SUMS --clobber
+            gh release edit "$RELEASE_TAG" --notes-file release/RELEASE_NOTES.md
+          else
+            gh release create "$RELEASE_TAG" release/*.apk release/SHA256SUMS \
+              --verify-tag --title "拾音 ${RELEASE_TAG#v}" --notes-file release/RELEASE_NOTES.md
+          fi

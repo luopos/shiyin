@@ -80,6 +80,26 @@ native/
 └── tests/                       # 独立 instrumentation 测试 APK
 ```
 
+## 下载与 GitHub 自动编译
+
+安装包在仓库的 **Releases** 页面下载，附带 `SHA256SUMS` 校验文件。
+
+仓库通过 `.github/workflows/android.yml` 自动构建，不需要在本机安装编译环境：
+
+- 推送到 `main`：自动构建、校验签名并上传 APK 到对应 Actions 运行的 Artifacts（保留 30 天）。
+- 手动运行：进入 **Actions → Android APK → Run workflow**。
+- 推送 `v` 开头的版本标签：构建成功后自动创建或更新 GitHub Release，上传 APK 与校验文件。
+- 标签须与 `AndroidManifest.xml` 的 `versionName` 一致，例如 `v2.2` 对应 `2.2`；新版本还应递增 `versionCode`。
+
+云端使用 JDK 17、Android SDK Platform 33 与 Build Tools 34.0.0，直接运行原有构建脚本。
+会编译独立测试 APK，但不会在云端启动模拟器执行回归测试。
+
+签名材料只保存在仓库的 **Settings → Secrets and variables → Actions**：
+`SHIYIN_KEYSTORE_BASE64`（签名库的 Base64）、`SHIYIN_KEYSTORE_PASS`、`SHIYIN_KEYSTORE_ALIAS`。
+当前沿用已有 APK 的开发签名，并校验公开证书指纹，确保后续构建的签名一致。
+缺少签名配置时构建会失败，不会临时生成另一套签名。不要把签名库或密码提交到源码。
+Fork 仓库需配置自己的 Secrets，并在工作流中更新公开证书指纹；不同签名无法覆盖安装原包。
+
 ## 编译
 
 只需要 JDK 17、Android SDK（build-tools 含 `aapt2`/`d8`/`zipalign`/`apksigner`）和 Python 3，
