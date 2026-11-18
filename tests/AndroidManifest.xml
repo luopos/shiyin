@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.shiyin.test">
+    <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="33" />
+    <application android:label="Playback Regression" />
+    <instrumentation android:name="com.shiyin.test.PlaybackTest"
+        android:targetPackage="com.shiyin.app" android:functionalTest="true" />
+</manifest>
