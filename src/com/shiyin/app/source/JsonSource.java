@@ -126,11 +126,22 @@ public final class JsonSource extends Source {
     /* ---------------- 分类 ---------------- */
 
     @Override public synchronized List<Cat> cats() throws Exception {
+        return loadCategories(false);
+    }
+
+    public synchronized List<Cat> refreshCategories() throws Exception {
+        return loadCategories(true);
+    }
+
+    private List<Cat> loadCategories(boolean force) throws Exception {
         String version = homeCacheVersion();
         Prefs.CachedCategories cached = Prefs.cachedCategories(id, version);
         long now = System.currentTimeMillis();
-        if (cached != null && !Prefs.categoryRefreshDue(id, version, now,
-                Subscriptions.CACHE_MAX_AGE_MS)) return cached.categories;
+        if (!force && !Prefs.categoryRefreshDue(id, version, now,
+                Subscriptions.CACHE_MAX_AGE_MS)) {
+            if (cached != null) return cached.categories;
+            throw new IOException("分类上次加载失败，将按更新周期自动重试；也可点击手动重试");
+        }
         try {
             JSONObject block = spec.getJSONObject("categories");
             JSONArray items = array(fetch(expand(text(block, "url"), vars())), text(block, "items"));

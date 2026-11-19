@@ -465,6 +465,10 @@ public class MainActivity extends Activity implements Player.Listener {
     /* ---------------- 分类 ---------------- */
 
     private void showCats() {
+        showCats(false);
+    }
+
+    private void showCats(final boolean force) {
         LinearLayout page = Widgets.vbox(this);
         if (Sources.isEmpty()) {
             page.addView(Widgets.empty(this, "还没有内容源\n到「我的 → 内容源」添加在线订阅"));
@@ -564,7 +568,8 @@ public class MainActivity extends Activity implements Player.Listener {
             for (Source s : Sources.all()) {
                 if (!s.hasCats()) continue;
                 try {
-                    loaded.addAll(s.cats());
+                    loaded.addAll(force && s instanceof com.shiyin.app.source.JsonSource
+                            ? ((com.shiyin.app.source.JsonSource) s).refreshCategories() : s.cats());
                 } catch (Exception failure) {
                     failures.add(s.name() + "：" + failure.getMessage());
                 }
@@ -590,7 +595,7 @@ public class MainActivity extends Activity implements Player.Listener {
                 if (isFinishing() || isDestroyed()) return;
                 emptyHint.setVisibility(View.VISIBLE);
                 emptyHint.setText("分类加载失败，可点击重试\n" + e.getMessage());
-                emptyHint.setOnClickListener(v -> showCats());
+                emptyHint.setOnClickListener(v -> showCats(true));
             }
         });
     }

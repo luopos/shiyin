@@ -105,7 +105,7 @@ public final class PlaybackTest extends Instrumentation {
         return false;
     }
     private void subscriptionTest() throws Exception {
-        // 测试跑在自己的进程里，App.onCreate 不会执行，存储要自己初始化。
+        // 显式初始化测试所需存储，不依赖 App.onCreate 与测试入口的执行顺序。
         com.shiyin.app.store.Prefs.init(getTargetContext());
         check(Sources.byId("lrts") == null, "built-in lrts source is not registered");
         check(Sources.byId("kuwo") == null, "built-in kuwo source is not registered");
@@ -434,6 +434,26 @@ public final class PlaybackTest extends Instrumentation {
             source.cats();
             check(categoryRequests.get() == afterFailure,
                     "category refresh failure is throttled until the next update cycle");
+            categories.edit().remove(key).remove(attemptKey).commit();
+            boolean firstFailed = false;
+            try { source.cats(); } catch (java.io.IOException expected) { firstFailed = true; }
+            check(firstFailed, "first category failure without a cache remains an error");
+            int emptyFailureRequests = categoryRequests.get();
+            boolean throttledFailure = false;
+            try { new com.shiyin.app.source.JsonSource(spec).cats(); }
+            catch (java.io.IOException expected) { throttledFailure = true; }
+            check(throttledFailure && categoryRequests.get() == emptyFailureRequests,
+                    "category failure without a cache is throttled across source instances");
+            check(!Prefs.categoryRefreshDue(sourceId, source.homeCacheVersion(),
+                    System.currentTimeMillis(), com.shiyin.app.source.Subscriptions.CACHE_MAX_AGE_MS)
+                    && Prefs.categoryRefreshDue(sourceId, source.homeCacheVersion(),
+                    System.currentTimeMillis() + com.shiyin.app.source.Subscriptions.CACHE_MAX_AGE_MS + 1000,
+                    com.shiyin.app.source.Subscriptions.CACHE_MAX_AGE_MS),
+                    "empty category cache retries only at the next automatic cycle");
+            offline.set(false);
+            check(!source.refreshCategories().isEmpty()
+                    && categoryRequests.get() == emptyFailureRequests + 1,
+                    "manual category retry bypasses the failed automatic cycle");
         } finally {
             if (activity != null) { final Activity last = activity; main(() -> last.finish()); }
             synchronized (Sources.class) { registry.clear(); registry.putAll(original); }
@@ -1200,15 +1220,15 @@ public final class PlaybackTest extends Instrumentation {
             Prefs.Prog saved = Prefs.progress("regression", "background");
             check(saved != null && saved.position >= 12000, "background progress persisted");
             controls.getTransportControls().skipToNext();
-            waitState(Player.PLAYING);
-            final int[] index = {-1};
-            main(() -> index[0] = Player.get().index());
-            check(index[0] == 1, "system next chapter works");
+            await("system next chapter playback", () -> onMain(() ->
+                    Player.get().index() == 1 && Player.get().state() == Player.PLAYING
+                            && Player.get().isPlaying()));
+            check(true, "system next chapter works");
             controls.getTransportControls().skipToPrevious();
-            SystemClock.sleep(700);
-            waitState(Player.PLAYING);
-            main(() -> index[0] = Player.get().index());
-            check(index[0] == 0, "system previous chapter works");
+            await("system previous chapter playback", () -> onMain(() ->
+                    Player.get().index() == 0 && Player.get().state() == Player.PLAYING
+                            && Player.get().isPlaying()));
+            check(true, "system previous chapter works");
             controls.getTransportControls().stop();
             waitState(Player.IDLE);
             SystemClock.sleep(500);
