@@ -308,23 +308,35 @@ public class MainActivity extends Activity implements Player.Listener {
             public List<Section> call() {
                 List<Section> out = new ArrayList<>();
                 for (Source s : Sources.all()) {
-                    List<Book> books = new ArrayList<>();
                     try {
+                        int before = out.size();
                         if (s instanceof com.shiyin.app.source.JsonSource
                                 && ((com.shiyin.app.source.JsonSource) s).hasHome()) {
-                            books = ((com.shiyin.app.source.JsonSource) s).home();
-                        } else if (s.hasCats()) {
+                            for (com.shiyin.app.source.JsonSource.HomeSection hs
+                                    : ((com.shiyin.app.source.JsonSource) s).home()) {
+                                Section section = new Section();
+                                section.label = hs.label.length() == 0
+                                        ? s.name() : s.name() + " · " + hs.label;
+                                section.books = hs.books;
+                                out.add(section);
+                            }
+                        }
+                        // home 没配或返回空，退回分类第一页
+                        if (out.size() == before && s.hasCats()) {
                             List<Cat> cats = s.cats();
-                            if (!cats.isEmpty()) books = s.page(cats.get(0), 1).books;
+                            if (!cats.isEmpty()) {
+                                List<Book> books = s.page(cats.get(0), 1).books;
+                                if (books != null && !books.isEmpty()) {
+                                    Section section = new Section();
+                                    section.label = s.name();
+                                    section.books = books;
+                                    out.add(section);
+                                }
+                            }
                         }
                     } catch (Exception ignored) {
                         // 单个源失败不影响其它源
                     }
-                    if (books == null || books.isEmpty()) continue;
-                    Section section = new Section();
-                    section.label = s.name();
-                    section.books = books;
-                    out.add(section);
                 }
                 return out;
             }

@@ -66,12 +66,40 @@ public final class JsonSource extends Source {
 
     public boolean hasHome() { return spec.optJSONObject("home") != null; }
 
+    /** 首页板块；订阅里配了 home.sections 就是多板块，否则单板块。 */
+    public static final class HomeSection {
+        public final String label;
+        public final List<Book> books;
+
+        HomeSection(String label, List<Book> books) {
+            this.label = label;
+            this.books = books;
+        }
+    }
+
     /** 订阅里配了 home 才有；没配就让调用方退回分类第一页。 */
-    public List<Book> home() throws Exception {
+    public List<HomeSection> home() throws Exception {
         JSONObject block = spec.getJSONObject("home");
         String url = url(block, vars("page", 1, "page0", 0, "page1", 2,
                 "kw", "", "id", "", "cat", "", "chapterId", ""));
-        return books(fetch(url), block);
+        JSONObject root = fetch(url);
+        JSONObject fields = block.optJSONObject("fields");
+        List<HomeSection> out = new ArrayList<>();
+        String sectionsPath = text(block, "sections");
+        if (sectionsPath.length() > 0) {
+            JSONArray arr = array(root, sectionsPath);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject sec = arr.optJSONObject(i);
+                if (sec == null) continue;
+                List<Book> books = booksOf(array(sec, "items"), fields);
+                if (!books.isEmpty()) out.add(new HomeSection(string(sec, "label"), books));
+            }
+        }
+        if (out.isEmpty()) {
+            List<Book> books = booksOf(array(root, text(block, "items")), fields);
+            if (!books.isEmpty()) out.add(new HomeSection("", books));
+        }
+        return out;
     }
 
     /* ---------------- 搜索 ---------------- */
@@ -209,8 +237,10 @@ public final class JsonSource extends Source {
     }
 
     private List<Book> books(JSONObject root, JSONObject block) {
-        JSONArray items = array(root, text(block, "items"));
-        JSONObject fields = block.optJSONObject("fields");
+        return booksOf(array(root, text(block, "items")), block.optJSONObject("fields"));
+    }
+
+    private List<Book> booksOf(JSONArray items, JSONObject fields) {
         List<Book> out = new ArrayList<>();
         for (int i = 0; i < items.length(); i++) {
             JSONObject item = items.optJSONObject(i);
