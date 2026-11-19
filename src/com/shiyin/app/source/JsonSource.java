@@ -4,6 +4,7 @@ import com.shiyin.app.model.Book;
 import com.shiyin.app.model.Cat;
 import com.shiyin.app.model.Chapter;
 import com.shiyin.app.net.Http;
+import com.shiyin.app.store.Prefs;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -66,12 +67,23 @@ public final class JsonSource extends Source {
 
     public boolean hasHome() { return spec.optJSONObject("home") != null; }
 
+    /** 缓存随源配置变化失效，磁盘只保存摘要。 */
+    public String homeCacheVersion() {
+        try {
+            byte[] bytes = spec.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+            return android.util.Base64.encodeToString(digest, android.util.Base64.NO_WRAP);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
+    }
+
     /** 首页板块；订阅里配了 home.sections 就是多板块，否则单板块。 */
     public static final class HomeSection {
         public final String label;
         public final List<Book> books;
 
-        HomeSection(String label, List<Book> books) {
+        public HomeSection(String label, List<Book> books) {
             this.label = label;
             this.books = books;
         }
@@ -113,11 +125,30 @@ public final class JsonSource extends Source {
 
     /* ---------------- 分类 ---------------- */
 
-    @Override public List<Cat> cats() throws Exception {
-        JSONObject block = spec.getJSONObject("categories");
-        JSONArray items = array(fetch(expand(text(block, "url"), vars())), text(block, "items"));
+    @Override public synchronized List<Cat> cats() throws Exception {
+        String version = homeCacheVersion();
+        Prefs.CachedCategories cached = Prefs.cachedCategories(id, version);
+        long now = System.currentTimeMillis();
+        if (cached != null && !Prefs.categoryRefreshDue(id, version, now,
+                Subscriptions.CACHE_MAX_AGE_MS)) return cached.categories;
+        try {
+            JSONObject block = spec.getJSONObject("categories");
+            JSONArray items = array(fetch(expand(text(block, "url"), vars())), text(block, "items"));
+            List<Cat> out = parseCategories(items, block.optJSONObject("fields"), 0);
+            if (out.isEmpty()) throw new IOException("分类接口暂时没有返回分类");
+            Prefs.cacheCategories(id, version, out, System.currentTimeMillis());
+            return out;
+        } catch (Exception failure) {
+            if (cached != null) return cached.categories;
+            throw failure;
+        } finally {
+            Prefs.markCategoryAttempt(id, version, System.currentTimeMillis());
+        }
+    }
+
+    private List<Cat> parseCategories(JSONArray items, JSONObject fields, int depth) {
         List<Cat> out = new ArrayList<>();
-        JSONObject fields = block.optJSONObject("fields");
+        if (depth > 8) return out;
         for (int i = 0; i < items.length(); i++) {
             JSONObject item = items.optJSONObject(i);
             if (item == null) continue;
@@ -125,13 +156,18 @@ public final class JsonSource extends Source {
             String cname = field(item, fields, "name");
             if (cid.length() == 0 || cname.length() == 0) continue;
             Cat c = new Cat(id, cid, cname);
-            String icon = field(item, fields, "icon");
-            if (icon.length() > 0) c.icon = icon;
-            String cdesc = field(item, fields, "desc");
-            if (cdesc.length() > 0) c.desc = cdesc;
+            c.icon = field(item, fields, "icon");
+            c.desc = field(item, fields, "desc");
+            String childPath = fields == null ? "children" : fields.optString("children", "children");
+            c.children.addAll(parseCategories(array(item, childPath), fields, depth + 1));
             out.add(c);
         }
         return out;
+    }
+
+    public List<Cat> cachedCategories() {
+        Prefs.CachedCategories cached = Prefs.cachedCategories(id, homeCacheVersion());
+        return cached == null ? new ArrayList<>() : cached.categories;
     }
 
     @Override public Page page(Cat cat, int pn) throws Exception {
@@ -321,7 +357,7 @@ public final class JsonSource extends Source {
         for (int i = 0; i + 1 < pairs.length; i += 2) {
             Object value = pairs[i + 1];
             String text = value == null ? "" : String.valueOf(value);
-            if ("kw".equals(pairs[i])) {
+            if ("kw".equals(pairs[i]) || "cat".equals(pairs[i])) {
                 try {
                     text = URLEncoder.encode(text, "UTF-8");
                 } catch (Exception ignored) {

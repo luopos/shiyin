@@ -49,24 +49,24 @@ public final class Sources {
         }
     }
 
-    public static List<Source> all() {
+    public static synchronized List<Source> all() {
         return new ArrayList<>(MAP.values());
     }
 
     /** 没有注册的源返回 null，调用方必须处理。 */
-    public static Source byId(String id) {
+    public static synchronized Source byId(String id) {
         return id == null ? null : MAP.get(id);
     }
 
-    public static Source forBook(Book b) {
+    public static synchronized Source forBook(Book b) {
         return b == null ? null : MAP.get(b.source);
     }
 
-    public static boolean isEmpty() {
+    public static synchronized boolean isEmpty() {
         return MAP.isEmpty();
     }
 
-    public static List<Source> searchable() {
+    public static synchronized List<Source> searchable() {
         List<Source> out = new ArrayList<>();
         for (Source s : MAP.values()) if (s.searchable()) out.add(s);
         return out;

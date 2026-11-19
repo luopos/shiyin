@@ -4,7 +4,9 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 import com.shiyin.app.model.Book;
+import com.shiyin.app.model.Cat;
 import com.shiyin.app.model.Chapter;
+import com.shiyin.app.source.JsonSource.HomeSection;
 import com.shiyin.app.source.Source;
 
 import org.json.JSONArray;
@@ -27,11 +29,15 @@ public final class Prefs {
     private static final String PAGE_FILE = "shiyin_chapter_pages";
     private static volatile SharedPreferences sp;
     private static volatile SharedPreferences pageSp;
+    private static volatile SharedPreferences homeSp;
+    private static volatile SharedPreferences categorySp;
 
     public static void init(Context ctx) {
         Context app = ctx.getApplicationContext();
         sp = app.getSharedPreferences(FILE, Context.MODE_PRIVATE);
         pageSp = app.getSharedPreferences(PAGE_FILE, Context.MODE_PRIVATE);
+        homeSp = app.getSharedPreferences("shiyin_home", Context.MODE_PRIVATE);
+        categorySp = app.getSharedPreferences("shiyin_categories", Context.MODE_PRIVATE);
     }
 
     private Prefs() {
@@ -104,6 +110,29 @@ public final class Prefs {
         return sp.getLong(subStampKey(url), 0L);
     }
 
+    /** 自动刷新失败也等下个周期；手动刷新不受影响。 */
+    public static boolean subscriptionRefreshDue(String url, long now, long cycle) {
+        long written = subscriptionSavedAt(url);
+        long attempted = sp.getLong("sub.try." + subStampKey(url), 0);
+        // 2.8 分类订阅结构升级仅补刷一次，之后仍按24小时周期。
+        if (sp.getInt("sub.schema." + subStampKey(url), 0) < 2) {
+            return attempted <= 0 || now - attempted >= cycle;
+        }
+        if (written > 0 && now - written < cycle) return false;
+        return attempted <= 0 || now - attempted >= cycle;
+    }
+
+    public static void markSubscriptionAttempt(String url, long now) {
+        sp.edit().putLong("sub.try." + subStampKey(url), now).apply();
+    }
+
+    /** 升级时仅一次迁移：拉新订阅结构，并后台更新旧版保存的空封面推荐。 */
+    public static void migrateSubscriptionSchema() {
+        if (sp.getInt("sub.appSchema", 0) >= 2) return;
+        expireHome();
+        sp.edit().putInt("sub.appSchema", 2).apply();
+    }
+
     public static void putSubscription(String url, String json) {
         if (url == null || url.length() == 0) return;
         List<String> urls = subscriptionUrls();
@@ -112,7 +141,9 @@ public final class Prefs {
         for (String u : urls) a.put(u);
         sp.edit().putString(SUB_URLS, a.toString())
                 .putString(subKey(url), json == null ? "" : json)
-                .putLong(subStampKey(url), System.currentTimeMillis()).apply();
+                .putLong(subStampKey(url), System.currentTimeMillis())
+                .putInt("sub.schema." + subStampKey(url), 2)
+                .remove("sub.try." + subStampKey(url)).apply();
     }
 
     public static void removeSubscription(String url) {
@@ -122,7 +153,166 @@ public final class Prefs {
         JSONArray a = new JSONArray();
         for (String u : urls) a.put(u);
         sp.edit().putString(SUB_URLS, a.toString())
-                .remove(subKey(url)).remove(subStampKey(url)).apply();
+                .remove(subKey(url)).remove(subStampKey(url))
+                .remove("sub.try." + subStampKey(url))
+                .remove("sub.schema." + subStampKey(url)).apply();
+    }
+
+    /* ---------------- 首页推荐缓存 ---------------- */
+
+    public static final class CachedHome {
+        public final List<HomeSection> sections;
+        public final long savedAt;
+
+        CachedHome(List<HomeSection> sections, long savedAt) {
+            this.sections = sections;
+            this.savedAt = savedAt;
+        }
+    }
+
+    private static String homeKey(String source) {
+        return android.util.Base64.encodeToString(source.getBytes(
+                java.nio.charset.StandardCharsets.UTF_8), android.util.Base64.NO_WRAP);
+    }
+
+    /** 与源配置绑定；过期仍可展示，只有成功的新结果才覆盖旧推荐。 */
+    public static CachedHome cachedHome(String source, String version) {
+        try {
+            JSONObject data = new JSONObject(homeSp.getString(homeKey(source), ""));
+            if (!version.equals(data.optString("version"))) return null;
+            List<HomeSection> sections = new ArrayList<>();
+            JSONArray stored = data.getJSONArray("sections");
+            for (int i = 0; i < stored.length(); i++) {
+                JSONObject section = stored.getJSONObject(i);
+                JSONArray items = section.getJSONArray("books");
+                List<Book> books = new ArrayList<>();
+                for (int j = 0; j < items.length(); j++) {
+                    Book book = chapterPageMeta(items.getJSONObject(j));
+                    if (book != null && book.valid() && source.equals(book.source)) books.add(book);
+                }
+                if (!books.isEmpty()) sections.add(new HomeSection(section.optString("label"), books));
+            }
+            return sections.isEmpty() ? null : new CachedHome(sections, data.optLong("savedAt"));
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    public static void cacheHome(String source, String version, List<HomeSection> sections, long now) {
+        if (sections == null || sections.isEmpty()) return;
+        try {
+            JSONArray stored = new JSONArray();
+            for (HomeSection section : sections) {
+                JSONArray books = new JSONArray();
+                for (Book book : section.books) {
+                    if (book != null && book.valid() && source.equals(book.source)) {
+                        books.put(chapterPageMeta(book));
+                    }
+                }
+                if (books.length() > 0) stored.put(new JSONObject()
+                        .put("label", section.label).put("books", books));
+            }
+            if (stored.length() == 0) return;
+            String value = new JSONObject().put("version", version).put("savedAt", now)
+                    .put("sections", stored).toString();
+            if (value.length() > 2 * 1024 * 1024) return;
+            homeSp.edit().putString(homeKey(source), value).apply();
+        } catch (Exception ignored) {
+            // 缓存失败不影响本次成功的加载结果。
+        }
+    }
+
+    /** 失败也记录尝试时间，避免每切一次页面就重试网络。 */
+    public static boolean homeRefreshDue(String source, String version, long now, long cycle) {
+        CachedHome cached = cachedHome(source, version);
+        if (cached != null && cached.savedAt > 0 && now - cached.savedAt < cycle) return false;
+        long attempted = homeSp.getLong("attempt." + homeKey(source) + "." + version, 0);
+        return attempted <= 0 || now - attempted >= cycle;
+    }
+
+    public static void markHomeAttempt(String source, String version, long now) {
+        homeSp.edit().putLong("attempt." + homeKey(source) + "." + version, now).apply();
+    }
+
+    /** 手动刷新订阅后让首页下次静默更新；保留已有内容供即时显示。 */
+    public static void expireHome() {
+        SharedPreferences.Editor editor = homeSp.edit();
+        for (Map.Entry<String, ?> entry : homeSp.getAll().entrySet()) {
+            try {
+                if (entry.getKey().startsWith("attempt.")) editor.remove(entry.getKey());
+                else if (entry.getValue() instanceof String) {
+                    JSONObject data = new JSONObject((String) entry.getValue());
+                    editor.putString(entry.getKey(), data.put("savedAt", 0).toString());
+                }
+            } catch (Exception ignored) { }
+        }
+        editor.apply();
+    }
+
+    /* ---------------- 分类树缓存 ---------------- */
+
+    public static final class CachedCategories {
+        public final List<Cat> categories;
+        public final long savedAt;
+        CachedCategories(List<Cat> categories, long savedAt) {
+            this.categories = categories;
+            this.savedAt = savedAt;
+        }
+    }
+
+    public static CachedCategories cachedCategories(String source, String version) {
+        try {
+            JSONObject data = new JSONObject(categorySp.getString(homeKey(source), ""));
+            if (!version.equals(data.optString("version"))) return null;
+            List<Cat> categories = readCats(data.getJSONArray("items"), source, 0);
+            return categories.isEmpty() ? null : new CachedCategories(categories, data.optLong("savedAt"));
+        } catch (Exception ignored) { return null; }
+    }
+
+    private static List<Cat> readCats(JSONArray items, String source, int depth) throws Exception {
+        List<Cat> out = new ArrayList<>();
+        if (depth > 8) return out;
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.getJSONObject(i);
+            Cat cat = new Cat(source, item.getString("id"), item.getString("name"));
+            cat.icon = item.optString("icon");
+            cat.desc = item.optString("desc");
+            JSONArray children = item.optJSONArray("children");
+            if (children != null) cat.children.addAll(readCats(children, source, depth + 1));
+            out.add(cat);
+        }
+        return out;
+    }
+
+    private static JSONArray writeCats(List<Cat> categories, int depth) throws Exception {
+        JSONArray out = new JSONArray();
+        if (depth > 8) return out;
+        for (Cat cat : categories) {
+            out.put(new JSONObject().put("id", cat.id).put("name", cat.name)
+                    .put("icon", cat.icon).put("desc", cat.desc)
+                    .put("children", writeCats(cat.children, depth + 1)));
+        }
+        return out;
+    }
+
+    public static void cacheCategories(String source, String version, List<Cat> cats, long now) {
+        if (cats == null || cats.isEmpty()) return;
+        try {
+            String body = new JSONObject().put("version", version).put("savedAt", now)
+                    .put("items", writeCats(cats, 0)).toString();
+            categorySp.edit().putString(homeKey(source), body).apply();
+        } catch (Exception ignored) { }
+    }
+
+    public static boolean categoryRefreshDue(String source, String version, long now, long cycle) {
+        CachedCategories cached = cachedCategories(source, version);
+        if (cached != null && cached.savedAt > 0 && now - cached.savedAt < cycle) return false;
+        long attempted = categorySp.getLong("attempt." + homeKey(source) + "." + version, 0);
+        return attempted <= 0 || now - attempted >= cycle;
+    }
+
+    public static void markCategoryAttempt(String source, String version, long now) {
+        categorySp.edit().putLong("attempt." + homeKey(source) + "." + version, now).apply();
     }
 
     public static boolean bootReminder() { return sp.getBoolean("bootReminder", false); }

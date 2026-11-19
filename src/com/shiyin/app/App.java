@@ -22,6 +22,7 @@ public class App extends Application {
         CookieHandler.setDefault(cm);
 
         Prefs.init(this);
+        Prefs.migrateSubscriptionSchema();
         // 订阅清单先用本地缓存注册：断网能用，启动也不用等网络。
         Subscriptions.reload();
         // 缓存超过有效期的才在后台静默刷新一次，失败就算了，不打扰用户。

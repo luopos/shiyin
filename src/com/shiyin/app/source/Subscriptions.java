@@ -107,17 +107,19 @@ public final class Subscriptions {
      *
      * @return 成功刷新的订阅数量
      */
-    public static int refreshStale() {
+    public static synchronized int refreshStale() {
         int refreshed = 0;
         for (String url : Prefs.subscriptionUrls()) {
-            if (!isStale(url)) continue;
+            long now = System.currentTimeMillis();
+            if (!Prefs.subscriptionRefreshDue(url, now, CACHE_MAX_AGE_MS)) continue;
+            Prefs.markSubscriptionAttempt(url, now);
             try {
                 String body = download(url);
                 parse(body);
                 Prefs.putSubscription(url, body);
                 refreshed++;
             } catch (Exception ignored) {
-                // 静默失败：下次启动再试，或用户手动刷新。
+                // 静默失败：保留缓存，下个更新周期再试，手动刷新仍然可用。
             }
         }
         if (refreshed > 0) reload();

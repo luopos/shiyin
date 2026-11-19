@@ -54,6 +54,11 @@ public class MainActivity extends Activity implements Player.Listener {
     private int tab = 0;
     private volatile int updateRequestGeneration;
     private volatile boolean checkingUpdate;
+    private LinearLayout homePage;
+    private LinearLayout homeBody;
+    private ScrollView homeScroll;
+    private String homeVersion = "";
+    private boolean homeLoading;
 
     private static final class Section {
         String label = "";
@@ -284,86 +289,151 @@ public class MainActivity extends Activity implements Player.Listener {
 
     /* ---------------- 首页 ---------------- */
 
+    private static String sourceHomeVersion(Source source) {
+        return source instanceof com.shiyin.app.source.JsonSource
+                ? ((com.shiyin.app.source.JsonSource) source).homeCacheVersion()
+                : source.getClass().getName() + ":" + source.name();
+    }
+
+    private static String homeVersion(List<Source> sources) {
+        StringBuilder key = new StringBuilder();
+        for (Source source : sources) {
+            key.append(source.id().length()).append(':').append(source.id())
+                    .append(':').append(sourceHomeVersion(source)).append('\n');
+        }
+        return key.toString();
+    }
+
+    private static void appendHome(List<Section> out, Source source,
+            List<com.shiyin.app.source.JsonSource.HomeSection> sections) {
+        for (com.shiyin.app.source.JsonSource.HomeSection cached : sections) {
+            Section section = new Section();
+            section.label = cached.label.length() == 0 ? source.name()
+                    : source.name() + " · " + cached.label;
+            section.books = cached.books;
+            out.add(section);
+        }
+    }
+
     private void showHome() {
-        final LinearLayout page = Widgets.vbox(this);
-        final ScrollView sv = new ScrollView(this);
-        sv.setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        final LinearLayout body = Widgets.vbox(this);
-        sv.addView(body);
-        page.addView(sv);
-
-        body.addView(Widgets.loading(this, "正在加载推荐…"));
-        setPage(page);
-
-        if (Sources.isEmpty()) {
-            body.removeAllViews();
-            body.addView(Widgets.empty(this, "还没有内容源\n到「我的 → 内容源」添加在线订阅"));
-            body.addView(retryButton());
+        final List<Source> sources = Sources.all();
+        final String version = homeVersion(sources);
+        if (homePage == null || !version.equals(homeVersion)) {
+            homeVersion = version;
+            homePage = Widgets.vbox(this);
+            homeScroll = new ScrollView(this);
+            homeScroll.setLayoutParams(new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            homeBody = Widgets.vbox(this);
+            homeScroll.addView(homeBody);
+            homePage.addView(homeScroll);
+            List<Section> cached = new ArrayList<>();
+            for (Source source : sources) {
+                Prefs.CachedHome data = Prefs.cachedHome(source.id(), sourceHomeVersion(source));
+                if (data != null) appendHome(cached, source, data.sections);
+            }
+            if (!cached.isEmpty() || sources.isEmpty()) renderHome(homeBody, cached, sources.isEmpty());
+        }
+        // 直接复用原页面，连纵向与横向滚动位置都保留。
+        if (homePage.getParent() != content) setPage(homePage);
+        if (sources.isEmpty()) return;
+        if (homeLoading) {
+            if (homeBody.getChildCount() == 0) homeBody.addView(Widgets.loading(this, "正在加载推荐…"));
             return;
         }
-
-        Bg.run(new java.util.concurrent.Callable<List<Section>>() {
-            @Override
-            public List<Section> call() {
-                List<Section> out = new ArrayList<>();
-                for (Source s : Sources.all()) {
-                    try {
-                        int before = out.size();
-                        if (s instanceof com.shiyin.app.source.JsonSource
-                                && ((com.shiyin.app.source.JsonSource) s).hasHome()) {
-                            for (com.shiyin.app.source.JsonSource.HomeSection hs
-                                    : ((com.shiyin.app.source.JsonSource) s).home()) {
-                                Section section = new Section();
-                                section.label = hs.label.length() == 0
-                                        ? s.name() : s.name() + " · " + hs.label;
-                                section.books = hs.books;
-                                out.add(section);
-                            }
-                        }
-                        // home 没配或返回空，退回分类第一页
-                        if (out.size() == before && s.hasCats()) {
-                            List<Cat> cats = s.cats();
-                            if (!cats.isEmpty()) {
-                                List<Book> books = s.page(cats.get(0), 1).books;
-                                if (books != null && !books.isEmpty()) {
-                                    Section section = new Section();
-                                    section.label = s.name();
-                                    section.books = books;
-                                    out.add(section);
-                                }
-                            }
-                        }
-                    } catch (Exception ignored) {
-                        // 单个源失败不影响其它源
-                    }
-                }
-                return out;
-            }
-        }, new Bg.Cb<List<Section>>() {
-            @Override
-            public void ok(List<Section> sections) {
-                if (tab != 0 || isFinishing() || isDestroyed()) return;
-                body.removeAllViews();
-                if (sections.isEmpty()) {
-                    body.addView(Widgets.empty(MainActivity.this,
-                            "订阅源暂时没有返回内容\n可以试试搜索，或稍后重试"));
-                    body.addView(retryButton());
+        boolean due = false;
+        long now = System.currentTimeMillis();
+        for (Source source : sources) {
+            if (Prefs.homeRefreshDue(source.id(), sourceHomeVersion(source), now,
+                    Subscriptions.CACHE_MAX_AGE_MS)) due = true;
+        }
+        if (!due) {
+            if (homeBody.getChildCount() == 0) renderHome(homeBody, new ArrayList<>(), false);
+            return;
+        }
+        homeLoading = true;
+        final LinearLayout target = homeBody;
+        final ScrollView scroll = homeScroll;
+        if (target.getChildCount() == 0) {
+            target.addView(Widgets.loading(this, "正在加载推荐…"));
+        }
+        Bg.run(() -> loadHome(sources), new Bg.Cb<List<Section>>() {
+            @Override public void ok(List<Section> sections) {
+                homeLoading = false;
+                if (isFinishing() || isDestroyed()) return;
+                if (target != homeBody || !version.equals(homeVersion(Sources.all()))) {
+                    if (tab == 0) showHome();
                     return;
                 }
-                for (Section section : sections) {
-                    addBookSection(body, section.label, section.books, section.books.size());
-                }
-                body.addView(Ui.spacer(MainActivity.this, 24));
+                // 两个 Activity 等待同一批请求时，重新读取已落盘的结果。
+                int position = scroll.getScrollY();
+                renderHome(target, sections, false);
+                scroll.post(() -> scroll.scrollTo(0, position));
+                // 离开首页时也保留加载结果，返回不再重发请求。
             }
 
-            @Override
-            public void fail(Exception e) {
-                body.removeAllViews();
-                body.addView(Widgets.empty(MainActivity.this, "加载失败：" + e.getMessage()));
-                body.addView(retryButton());
+            @Override public void fail(Exception e) {
+                homeLoading = false;
+                if (isFinishing() || isDestroyed() || target != homeBody) return;
+                List<Section> cached = new ArrayList<>();
+                for (Source source : sources) {
+                    Prefs.CachedHome data = Prefs.cachedHome(source.id(), sourceHomeVersion(source));
+                    if (data != null) appendHome(cached, source, data.sections);
+                }
+                renderHome(target, cached, false);
             }
         });
+    }
+
+    private static synchronized List<Section> loadHome(List<Source> sources) {
+        List<Section> out = new ArrayList<>();
+        for (Source source : sources) {
+            String version = sourceHomeVersion(source);
+            Prefs.CachedHome cached = Prefs.cachedHome(source.id(), version);
+            List<com.shiyin.app.source.JsonSource.HomeSection> sections = new ArrayList<>();
+            long now = System.currentTimeMillis();
+            if (Prefs.homeRefreshDue(source.id(), version, now, Subscriptions.CACHE_MAX_AGE_MS)) {
+                try {
+                    if (source instanceof com.shiyin.app.source.JsonSource
+                            && ((com.shiyin.app.source.JsonSource) source).hasHome()) {
+                        sections.addAll(((com.shiyin.app.source.JsonSource) source).home());
+                    }
+                    if (sections.isEmpty() && source.hasCats()) {
+                        List<Cat> cats = source.cats();
+                        if (!cats.isEmpty()) {
+                            List<Book> books = source.page(cats.get(0), 1).books;
+                            if (books != null && !books.isEmpty()) sections.add(
+                                    new com.shiyin.app.source.JsonSource.HomeSection("", books));
+                        }
+                    }
+                    Prefs.cacheHome(source.id(), version, sections, System.currentTimeMillis());
+                } catch (Exception ignored) {
+                    // 某源失败或返回空内容时保留这个源的旧推荐，不影响其它板块。
+                } finally {
+                    Prefs.markHomeAttempt(source.id(), version, System.currentTimeMillis());
+                }
+            }
+            if (sections.isEmpty() && cached != null) sections = cached.sections;
+            appendHome(out, source, sections);
+        }
+        return out;
+    }
+
+    private void renderHome(LinearLayout body, List<Section> sections, boolean noSources) {
+        body.removeAllViews();
+        if (noSources) {
+            body.addView(Widgets.empty(this, "还没有内容源\n到「我的 → 内容源」添加在线订阅"));
+            body.addView(retryButton());
+        } else if (!sections.isEmpty()) {
+            for (Section section : sections) {
+                addBookSection(body, section.label, section.books, section.books.size());
+            }
+            body.addView(Ui.spacer(this, 24));
+        } else if (!homeLoading) {
+            // 首次打开由 showHome 决定是否发起请求；失败后才显示重试。
+            body.addView(Widgets.empty(this, "订阅源暂时没有返回内容\n可以试试搜索，或手动重试"));
+            body.addView(retryButton());
+        }
     }
 
     private void addBookSection(LinearLayout body, String title, List<Book> books, int limit) {
@@ -384,6 +454,7 @@ public class MainActivity extends Activity implements Player.Listener {
         TextView b = Widgets.button(this, "重试", true, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                Prefs.expireHome();
                 showHome();
             }
         });
@@ -408,9 +479,15 @@ public class MainActivity extends Activity implements Player.Listener {
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         final List<Cat> roots = new ArrayList<>();
+        for (Source source : Sources.all()) {
+            if (source instanceof com.shiyin.app.source.JsonSource && source.hasCats()) {
+                roots.addAll(((com.shiyin.app.source.JsonSource) source).cachedCategories());
+            }
+        }
         final TextView emptyHint = Ui.text(this, "正在加载分类…", 12.5f, Ui.DIM2);
         emptyHint.setPadding(Ui.dp(this, 16), Ui.dp(this, 14), Ui.dp(this, 16), Ui.dp(this, 14));
         page.addView(emptyHint);
+        if (!roots.isEmpty()) emptyHint.setVisibility(View.GONE);
 
         // 分类用自定义行，直接建一个内部 adapter
         final android.widget.BaseAdapter adapter = new android.widget.BaseAdapter() {
@@ -480,14 +557,20 @@ public class MainActivity extends Activity implements Player.Listener {
         setPage(page);
 
         Bg.run(() -> {
+            // 升级后的订阅结构迁移与 App 后台任务共用周期锁，避免分类页先读到旧清单。
+            Subscriptions.refreshStale();
             List<Cat> loaded = new ArrayList<>();
+            List<String> failures = new ArrayList<>();
             for (Source s : Sources.all()) {
                 if (!s.hasCats()) continue;
                 try {
                     loaded.addAll(s.cats());
-                } catch (Exception ignored) {
+                } catch (Exception failure) {
+                    failures.add(s.name() + "：" + failure.getMessage());
                 }
             }
+            if (loaded.isEmpty() && !failures.isEmpty()) throw new java.io.IOException(
+                    android.text.TextUtils.join("\n", failures));
             return loaded;
         }, new Bg.Cb<List<Cat>>() {
             @Override public void ok(List<Cat> v) {
@@ -496,14 +579,18 @@ public class MainActivity extends Activity implements Player.Listener {
                 roots.addAll(v);
                 adapter.notifyDataSetChanged();
                 if (roots.isEmpty()) {
-                    emptyHint.setText("这个订阅没有提供分类，可以直接用搜索");
+                    emptyHint.setVisibility(View.VISIBLE);
+                    emptyHint.setText("订阅尚未提供分类，可到「我的 → 刷新全部订阅」更新分类配置");
                 } else {
                     emptyHint.setVisibility(View.GONE);
                 }
             }
 
             @Override public void fail(Exception e) {
-                emptyHint.setText("分类加载失败：" + e.getMessage());
+                if (isFinishing() || isDestroyed()) return;
+                emptyHint.setVisibility(View.VISIBLE);
+                emptyHint.setText("分类加载失败，可点击重试\n" + e.getMessage());
+                emptyHint.setOnClickListener(v -> showCats());
             }
         });
     }
@@ -742,7 +829,7 @@ public class MainActivity extends Activity implements Player.Listener {
             body.addView(settingRow("管理订阅", subs.size() + " 个地址",
                     v -> showSubscriptions()));
             body.addView(settingRow("刷新全部订阅",
-                    "缓存 " + (Subscriptions.CACHE_MAX_AGE_MS / 3600000L) + " 小时，过期自动更新",
+                    "每 " + (Subscriptions.CACHE_MAX_AGE_MS / 3600000L) + " 小时自动更新，首页优先读本地",
                     v -> refreshAllSubscriptions()));
         }
 
@@ -844,8 +931,6 @@ public class MainActivity extends Activity implements Player.Listener {
 
     private void showSubscriptionActions(final String url) {
         new AlertDialog.Builder(this).setTitle(url)
-                .setMessage(Subscriptions.cacheAge(url)
-                        + "\n订阅清单有本地缓存，启动时不会重复下载。")
                 .setItems(new String[]{"立即刷新", "删除"}, (dialog, which) -> {
                     if (which == 0) refreshSubscription(url);
                     else confirmRemoveSubscription(url);
@@ -860,6 +945,7 @@ public class MainActivity extends Activity implements Player.Listener {
             return Sources.all().size();
         }, new Bg.Cb<Integer>() {
             @Override public void ok(Integer count) {
+                Prefs.expireHome();
                 if (isFinishing() || isDestroyed()) return;
                 Ui.toast(MainActivity.this, "已刷新，共 " + count + " 个源");
                 showMine();
@@ -882,6 +968,7 @@ public class MainActivity extends Activity implements Player.Listener {
         Ui.toast(this, "正在刷新订阅…");
         Bg.run(Subscriptions::refreshAll, new Bg.Cb<List<String>>() {
             @Override public void ok(List<String> failed) {
+                Prefs.expireHome();
                 if (isFinishing() || isDestroyed()) return;
                 if (failed.isEmpty()) {
                     Ui.toast(MainActivity.this, "订阅已全部更新");

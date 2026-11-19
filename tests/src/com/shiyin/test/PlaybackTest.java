@@ -189,6 +189,259 @@ public final class PlaybackTest extends Instrumentation {
                 "removing the cached subscription unregisters its source");
         check(com.shiyin.app.store.Prefs.subscriptionSavedAt(cacheUrl) == 0,
                 "removing the subscription drops its cache timestamp");
+        com.shiyin.app.store.Prefs.markSubscriptionAttempt(cacheUrl, now);
+        check(!Prefs.subscriptionRefreshDue(cacheUrl, now + 1000, ttl),
+                "failed automatic subscription attempt is throttled across restarts");
+        check(Prefs.subscriptionRefreshDue(cacheUrl, now + ttl, ttl),
+                "automatic subscription retry becomes due at the next update cycle");
+        com.shiyin.app.store.Prefs.removeSubscription(cacheUrl);
+    }
+
+    private void selectMainTab(Activity activity, int tab) {
+        main(() -> {
+            try {
+                Field field = com.shiyin.app.MainActivity.class.getDeclaredField("tabs");
+                field.setAccessible(true);
+                TextView[] tabs = (TextView[]) field.get(activity);
+                ((View) tabs[tab].getParent()).performClick();
+            } catch (Exception e) { throw new AssertionError(e); }
+        });
+    }
+
+    private Object activityField(Activity activity, String name) throws Exception {
+        Field field = com.shiyin.app.MainActivity.class.getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(activity);
+    }
+
+    private Activity startHome() {
+        return startActivitySync(new Intent(getTargetContext(), com.shiyin.app.MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP));
+    }
+
+    private void homeCacheTest() throws Exception {
+        Prefs.init(getTargetContext());
+        Field field = Sources.class.getDeclaredField("MAP");
+        field.setAccessible(true);
+        Map<String, Source> registry = (Map<String, Source>) field.get(null);
+        Map<String, Source> original = new java.util.LinkedHashMap<>(registry);
+        String sourceId = "home-cache-regression";
+        AtomicInteger requests = new AtomicInteger();
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        final boolean[] fail = {false};
+        Source source = new Source() {
+            public String id() { return sourceId; }
+            public String name() { return "缓存回归源"; }
+            public String audio(Chapter chapter) { return chapter.url; }
+            public List<com.shiyin.app.model.Cat> cats() throws Exception {
+                requests.incrementAndGet();
+                release.await(8, java.util.concurrent.TimeUnit.SECONDS);
+                if (fail[0]) throw new IOException("simulated offline");
+                return Collections.singletonList(new com.shiyin.app.model.Cat());
+            }
+            public Page page(com.shiyin.app.model.Cat cat, int pn) {
+                Page page = new Page();
+                page.books.add(new Book(sourceId, "new", "周期更新后的推荐"));
+                return page;
+            }
+        };
+        String version = source.getClass().getName() + ":" + source.name();
+        List<com.shiyin.app.source.JsonSource.HomeSection> cached = Collections.singletonList(
+                new com.shiyin.app.source.JsonSource.HomeSection("离线板块", Collections.singletonList(
+                        new Book(sourceId, "cached", "本地缓存推荐"))));
+        SharedPreferences homePrefs = getTargetContext().getSharedPreferences("shiyin_home", 0);
+        String key = android.util.Base64.encodeToString(sourceId.getBytes("UTF-8"),
+                android.util.Base64.NO_WRAP);
+        Activity activity = null;
+        try {
+            synchronized (Sources.class) { registry.clear(); registry.put(sourceId, source); }
+            Prefs.cacheHome(sourceId, version, cached, System.currentTimeMillis());
+            check(Prefs.cachedHome(sourceId, version).sections.get(0).books.get(0).id.equals("cached"),
+                    "home cache stores book identifiers on disk");
+            check(Prefs.cachedHome(sourceId, version + "changed") == null,
+                    "home cache rejects a changed subscription definition");
+            activity = startHome();
+            final Activity first = activity;
+            check(onMain(() -> findView(first.getWindow().getDecorView(), TextView.class,
+                    "本地缓存推荐") != null), "home displays disk cache immediately");
+            final Object firstPage = activityField(activity, "homePage");
+            for (int i = 0; i < 4; i++) { selectMainTab(activity, 2); selectMainTab(activity, 0); }
+            check(activityField(activity, "homePage") == firstPage,
+                    "switching tabs reuses the same home view");
+            check(requests.get() == 0, "switching tabs within the update cycle makes zero home requests");
+            check(onMain(() -> !containsProgress(first.getWindow().getDecorView())),
+                    "cached home does not flash a loading indicator on return");
+            main(() -> first.finish());
+            activity = startHome();
+            final Activity reopened = activity;
+            check(onMain(() -> findView(reopened.getWindow().getDecorView(), TextView.class,
+                    "本地缓存推荐") != null) && requests.get() == 0,
+                    "new activity restores persisted recommendations without a request");
+            main(() -> reopened.finish());
+            long old = System.currentTimeMillis()
+                    - com.shiyin.app.source.Subscriptions.CACHE_MAX_AGE_MS - 60000;
+            Prefs.cacheHome(sourceId, version, cached, old);
+            activity = startHome();
+            final Activity expired = activity;
+            await("expired home refresh", () -> requests.get() == 1);
+            check(onMain(() -> findView(expired.getWindow().getDecorView(), TextView.class,
+                    "本地缓存推荐") != null && !containsProgress(expired.getWindow().getDecorView())),
+                    "expired cache stays visible during a silent refresh");
+            selectMainTab(expired, 2);
+            release.countDown();
+            await("home response stored while away", () -> onMain(() -> {
+                try { return !(Boolean) activityField(expired, "homeLoading"); }
+                catch (Exception e) { throw new AssertionError(e); }
+            }));
+            selectMainTab(expired, 0);
+            check(onMain(() -> findView(expired.getWindow().getDecorView(), TextView.class,
+                    "周期更新后的推荐") != null), "response received offscreen is retained when returning home");
+            check(requests.get() == 1, "expired home refresh is requested exactly once");
+            main(() -> expired.finish());
+            fail[0] = true;
+            Prefs.cacheHome(sourceId, version, cached, old);
+            // 删除本测试源的尝试时间，允许模拟第二个更新周期。
+            homePrefs.edit().remove("attempt." + key + "." + version).commit();
+            activity = startHome();
+            final Activity offline = activity;
+            await("failed refresh completes", () -> onMain(() -> {
+                try { return !(Boolean) activityField(offline, "homeLoading") && requests.get() == 2; }
+                catch (Exception e) { throw new AssertionError(e); }
+            }));
+            check(onMain(() -> findView(offline.getWindow().getDecorView(), TextView.class,
+                    "本地缓存推荐") != null), "failed refresh preserves the previous source section");
+            selectMainTab(offline, 2); selectMainTab(offline, 0);
+            check(requests.get() == 2, "failed refresh is throttled across tab switches");
+            check(Prefs.cachedHome(sourceId, version).savedAt == old,
+                    "failed refresh never overwrites the last successful cache");
+            check(!Prefs.homeRefreshDue(sourceId, version, System.currentTimeMillis(),
+                    com.shiyin.app.source.Subscriptions.CACHE_MAX_AGE_MS),
+                    "failed automatic refresh waits for the next cycle");
+        } finally {
+            release.countDown();
+            if (activity != null) { final Activity last = activity; main(() -> last.finish()); }
+            synchronized (Sources.class) { registry.clear(); registry.putAll(original); }
+            SharedPreferences.Editor cleanup = homePrefs.edit().remove(key);
+            for (String stored : homePrefs.getAll().keySet()) {
+                if (stored.startsWith("attempt." + key + ".")) cleanup.remove(stored);
+            }
+            cleanup.commit();
+        }
+    }
+
+    private void categoryTest() throws Exception {
+        String sourceId = "category-regression";
+        AtomicInteger categoryRequests = new AtomicInteger();
+        AtomicInteger bookRequests = new AtomicInteger();
+        java.util.concurrent.atomic.AtomicBoolean offline = new java.util.concurrent.atomic.AtomicBoolean();
+        java.util.concurrent.atomic.AtomicBoolean running = new java.util.concurrent.atomic.AtomicBoolean(true);
+        List<String> requestLines = Collections.synchronizedList(new ArrayList<>());
+        java.net.ServerSocket server = new java.net.ServerSocket(0, 8,
+                java.net.InetAddress.getByName("127.0.0.1"));
+        Thread fixture = new Thread(() -> {
+            while (running.get()) {
+                try (java.net.Socket socket = server.accept()) {
+                    java.io.BufferedReader reader = new java.io.BufferedReader(
+                            new java.io.InputStreamReader(socket.getInputStream(), "UTF-8"));
+                    String request = reader.readLine();
+                    requestLines.add(request);
+                    String line;
+                    while ((line = reader.readLine()) != null && !line.isEmpty()) { }
+                    String response;
+                    if (request.contains("/categories")) {
+                        categoryRequests.incrementAndGet();
+                        response = "{\"items\":[{\"id\":\"root\",\"name\":\"回归分类\","
+                                + "\"desc\":\"根分类说明\",\"children\":[{\"id\":\"cat:type=7\","
+                                + "\"name\":\"回归子分类\"}]}]}";
+                    } else {
+                        bookRequests.incrementAndGet();
+                        boolean second = request.contains("page=2");
+                        response = "{\"items\":[{\"id\":\"" + (second ? "book2" : "book1")
+                                + "\",\"title\":\"分类书目" + (second ? "二" : "一")
+                                + "\"}],\"totalPage\":2}";
+                    }
+                    byte[] body = response.getBytes("UTF-8");
+                    String header = "HTTP/1.1 " + (offline.get() ? "502 Unavailable" : "200 OK")
+                            + "\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: "
+                            + body.length + "\r\nConnection: close\r\n\r\n";
+                    socket.getOutputStream().write(header.getBytes("US-ASCII"));
+                    socket.getOutputStream().write(body);
+                } catch (Exception ignored) { if (!running.get()) break; }
+            }
+        });
+        fixture.start();
+        String base = "http://127.0.0.1:" + server.getLocalPort();
+        org.json.JSONObject spec = new org.json.JSONObject().put("id", sourceId).put("name", "回归分类源")
+                .put("categories", new org.json.JSONObject().put("url", base + "/categories")
+                        .put("items", "items").put("page", new org.json.JSONObject()
+                                .put("url", base + "/category?cat={cat}&page={page}")
+                                .put("items", "items").put("totalPage", "totalPage")));
+        com.shiyin.app.source.JsonSource source = new com.shiyin.app.source.JsonSource(spec);
+        Activity activity = null;
+        Field registryField = Sources.class.getDeclaredField("MAP");
+        registryField.setAccessible(true);
+        Map<String, Source> registry = (Map<String, Source>) registryField.get(null);
+        Map<String, Source> original = new java.util.LinkedHashMap<>(registry);
+        SharedPreferences categories = getTargetContext().getSharedPreferences("shiyin_categories", 0);
+        String key = android.util.Base64.encodeToString(sourceId.getBytes("UTF-8"),
+                android.util.Base64.NO_WRAP);
+        String attemptKey = "attempt." + key + "." + source.homeCacheVersion();
+        try {
+            categories.edit().remove(key).remove(attemptKey).commit();
+            List<com.shiyin.app.model.Cat> cats = source.cats();
+            check(cats.size() == 1 && cats.get(0).children.size() == 1,
+                    "subscription categories preserve root and child entries");
+            com.shiyin.app.model.Cat leaf = cats.get(0).children.get(0);
+            check(sourceId.equals(leaf.source) && "cat:type=7".equals(leaf.id),
+                    "subscription category children keep source and filter identifiers");
+            source.cats();
+            new com.shiyin.app.source.JsonSource(spec).cats();
+            check(categoryRequests.get() == 1,
+                    "category list uses disk cache across source instances within the cycle");
+            Source.Page first = source.page(leaf, 1);
+            Source.Page second = source.page(leaf, 2);
+            check(first.books.size() == 1 && second.books.size() == 1
+                    && !first.books.get(0).id.equals(second.books.get(0).id),
+                    "category book pages return distinct book identifiers");
+            check(first.totalPage == 2 && second.totalPage == 2,
+                    "subscription category pages retain total page metadata");
+            check(requestLines.toString().contains("cat=cat%3Atype%3D7&page=1"),
+                    "category filters with reserved characters are URL encoded");
+            synchronized (Sources.class) { registry.clear(); registry.put(sourceId, source); }
+            activity = startHome();
+            selectMainTab(activity, 1);
+            final Activity opened = activity;
+            await("cached category renders", () -> onMain(() -> findView(opened.getWindow()
+                    .getDecorView(), TextView.class, "回归分类") != null));
+            check(onMain(() -> findView(opened.getWindow().getDecorView(), TextView.class,
+                    "正在加载分类…") == null), "category tab renders local categories without loading text");
+            selectMainTab(activity, 2); selectMainTab(activity, 1);
+            check(categoryRequests.get() == 1, "returning to categories does not refetch its list");
+            main(() -> {
+                TextView label = findView(opened.getWindow().getDecorView(), TextView.class, "回归分类");
+                ((View) label.getParent().getParent()).performClick();
+            });
+            await("child category opens books", () -> onMain(() -> findView(opened.getWindow()
+                    .getDecorView(), TextView.class, "分类书目一") != null));
+            check(onMain(() -> findView(opened.getWindow().getDecorView(), TextView.class,
+                    "回归子分类") != null), "category root opens child filters and book results");
+            offline.set(true);
+            Prefs.cacheCategories(sourceId, source.homeCacheVersion(), cats,
+                    System.currentTimeMillis() - com.shiyin.app.source.Subscriptions.CACHE_MAX_AGE_MS - 60000);
+            categories.edit().remove(attemptKey).commit();
+            check(!source.cats().isEmpty(), "failed category refresh preserves the previous category tree");
+            int afterFailure = categoryRequests.get();
+            source.cats();
+            check(categoryRequests.get() == afterFailure,
+                    "category refresh failure is throttled until the next update cycle");
+        } finally {
+            if (activity != null) { final Activity last = activity; main(() -> last.finish()); }
+            synchronized (Sources.class) { registry.clear(); registry.putAll(original); }
+            categories.edit().remove(key).remove(attemptKey).commit();
+            getTargetContext().getSharedPreferences("shiyin_home", 0).edit().remove(key)
+                    .remove("attempt." + key + "." + source.homeCacheVersion()).commit();
+            running.set(false); server.close(); fixture.join(2000);
+        }
     }
 
     private void updateLogicTest() throws Exception {
@@ -639,8 +892,101 @@ public final class PlaybackTest extends Instrumentation {
     }
     @Override public void onStart() {
         Bundle outcome = new Bundle();
+        if (launchArguments != null && launchArguments.getString("catalog_live") != null) {
+            Activity activity = null;
+            try {
+                Prefs.init(getTargetContext());
+                com.shiyin.app.source.Subscriptions.install(launchArguments.getString("catalog_live"));
+                Prefs.expireHome();
+                int rootCount = 0;
+                for (Source source : Sources.all()) {
+                    if (!source.hasCats()) continue;
+                    List<com.shiyin.app.model.Cat> cats = source.cats();
+                    rootCount += cats.size();
+                    check(!cats.isEmpty() && !cats.get(0).children.isEmpty(),
+                            "live categories contain roots and children: " + source.id());
+                    com.shiyin.app.model.Cat leaf = cats.get(0).children.get(0);
+                    Source.Page first = source.page(leaf, 1);
+                    Source.Page second = source.page(leaf, 2);
+                    check(!first.books.isEmpty() && !second.books.isEmpty()
+                            && !first.books.get(0).id.equals(second.books.get(0).id),
+                            "live category pagination returns distinct nonempty pages: " + source.id());
+                }
+                check(rootCount > 0, "live subscription registers browseable categories: " + rootCount);
+                com.shiyin.app.source.JsonSource tingyou = (com.shiyin.app.source.JsonSource) Sources.byId("tingyou");
+                List<com.shiyin.app.source.JsonSource.HomeSection> sections = tingyou.home();
+                Book sample = sections.get(0).books.get(0);
+                check(!sample.cover.isEmpty(), "source3 home maps cover_url into a cover address");
+                com.shiyin.app.net.Http.Resp image = com.shiyin.app.net.Http.get(sample.cover, null,
+                        com.shiyin.app.net.Http.UA);
+                check(image.ok() && android.graphics.BitmapFactory.decodeByteArray(
+                        image.bytes, 0, image.bytes.length) != null,
+                        "source3 cover downloads and decodes on Android");
+                List<Book> searched = tingyou.search("三国", 1);
+                check(!searched.isEmpty() && !searched.get(0).cover.isEmpty(),
+                        "source3 search also returns cover addresses");
+                Source.Detail detail = tingyou.detail(sample, false);
+                check(detail.meta != null && !detail.meta.cover.isEmpty(),
+                        "source3 detail also returns a cover address");
+                activity = startHome();
+                selectMainTab(activity, 1);
+                final Activity opened = activity;
+                await("live categories rendered", () -> onMain(() -> findView(opened.getWindow()
+                        .getDecorView(), TextView.class, "有声小说") != null));
+                check(onMain(() -> findView(opened.getWindow().getDecorView(), TextView.class,
+                        "正在加载分类…") == null), "live categories render from local cache");
+                screenshot("categories-28.png");
+                selectMainTab(activity, 0);
+                await("home updated", () -> onMain(() -> {
+                    try { return !(Boolean) activityField(opened, "homeLoading"); }
+                    catch (Exception e) { throw new AssertionError(e); }
+                }));
+                outcome.putString("stream", results.toString()); finish(-1, outcome);
+            } catch (Throwable failure) {
+                outcome.putString("stream", results.toString() + "FAIL live catalog " + failure);
+                finish(0, outcome);
+            } finally {
+                if (activity != null) { final Activity last = activity; main(() -> last.finish()); }
+            }
+            return;
+        }
+        if (launchArguments != null && "1".equals(launchArguments.getString("home_probe"))) {
+            Activity activity = null;
+            try {
+                Prefs.init(getTargetContext());
+                com.shiyin.app.source.Subscriptions.reload();
+                int sections = 0;
+                for (Source source : Sources.all()) {
+                    if (!(source instanceof com.shiyin.app.source.JsonSource)) continue;
+                    Prefs.CachedHome cached = Prefs.cachedHome(source.id(),
+                            ((com.shiyin.app.source.JsonSource) source).homeCacheVersion());
+                    if (cached != null) sections += cached.sections.size();
+                }
+                check(sections > 0, "cold process restores persisted home sections: " + sections);
+                activity = startHome();
+                final Activity opened = activity;
+                check(onMain(() -> !containsProgress(opened.getWindow().getDecorView())),
+                        "cold process home displays cache without a loading indicator");
+                check(!(Boolean) activityField(activity, "homeLoading"),
+                        "cold process skips recommendation refresh within the cycle");
+                selectMainTab(activity, 2); selectMainTab(activity, 0);
+                check(!(Boolean) activityField(activity, "homeLoading"),
+                        "returning home after cold launch still makes no refresh");
+                screenshot("home-cache-28.png");
+                outcome.putString("stream", results.toString());
+                finish(-1, outcome);
+            } catch (Throwable failure) {
+                outcome.putString("stream", results.toString() + "FAIL cold cache " + failure);
+                finish(0, outcome);
+            } finally {
+                if (activity != null) { final Activity last = activity; main(() -> last.finish()); }
+            }
+            return;
+        }
         try {
             subscriptionTest();
+            homeCacheTest();
+            categoryTest();
             updateLogicTest();
         } catch (Throwable failure) {
             outcome.putString("stream", "FAIL update checks: " + failure);
