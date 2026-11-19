@@ -11,6 +11,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.shiyin.app.model.Book;
+import com.shiyin.app.source.Source;
 import com.shiyin.app.source.Sources;
 import com.shiyin.app.util.ImgView;
 import com.shiyin.app.util.Ui;
@@ -127,7 +128,8 @@ public final class Widgets {
 
     public static String srcName(String id) {
         try {
-            return Sources.byId(id).name();
+            Source s = Sources.byId(id);
+            return s == null ? "" : s.name();
         } catch (Exception e) {
             return "";
         }

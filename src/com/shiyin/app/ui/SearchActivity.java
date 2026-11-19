@@ -227,7 +227,14 @@ public class SearchActivity extends Activity {
 
         List<Source> targets = new ArrayList<>();
         if ("__all__".equals(selected)) targets.addAll(pool);
-        else targets.add(Sources.byId(selected));
+        else {
+            Source one = Sources.byId(selected);
+            if (one != null) targets.add(one);
+        }
+        if (targets.isEmpty()) {
+            status.setText("还没有内容源。到「我的 → 内容源」添加订阅后再搜");
+            return;
+        }
 
         status.setText("正在搜 " + kw + " …");
         adapter.set(null);

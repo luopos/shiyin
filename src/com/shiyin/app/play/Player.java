@@ -417,6 +417,7 @@ public final class Player {
             @Override
             public String call() throws Exception {
                 Source s = Sources.forBook(b);
+                if (s == null) throw new java.io.IOException("这个内容源没有安装，请到「我的 → 内容源」添加订阅");
                 return s.audio(c);
             }
         }, new Bg.Cb<String>() {

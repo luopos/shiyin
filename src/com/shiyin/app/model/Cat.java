@@ -10,7 +10,7 @@ public class Cat {
     public String icon = "";
     public String desc = "";
     public int color = 0xFFF5A524;
-    public String source = "lrts";
+    public String source = "";
     public List<Cat> children = new ArrayList<>();
 
     public Cat() {

@@ -2,17 +2,86 @@
 
 一个纯原生 Android 听书客户端：无 WebView、无 AndroidX、无 Gradle，`aapt2 + javac + d8` 直接出包。
 
-界面只保留四个内置内容源，按「源1 / 源2 / 源3 / 源4」编号展示，不显示渠道真名。
+界面不再内置任何内容源：源由用户自己添加的**在线订阅**提供，应用本身只负责解析和播放。
 支持后台播放、系统媒体卡片、耳机线控、分页目录、跨页连播和离线目录缓存。
 
 ![首页](docs/screenshots/home.png)
 ![分页目录](docs/screenshots/directory.png)
 
+## 内容源订阅
+
+应用不附带、也不推荐任何具体内容源。要浏览内容，需要自己准备一个订阅 JSON：
+
+- **我的 → 内容源 → 添加订阅**，填入订阅地址（`http://` 或 `https://`）。
+- 下载成功后缓存在本地，之后断网也能用；**管理订阅** 里可以刷新或删除。
+- 删除订阅会同时移除它提供的源，书架里对应的书将无法继续播放。
+
+订阅格式（`format` 可省略，但写了就必须是 `shiyin-sources`）：
+
+```json
+{
+  "format": "shiyin-sources",
+  "version": 1,
+  "name": "我的源",
+  "sources": [
+    {
+      "id": "demo",
+      "name": "演示源",
+      "desc": "说明文字",
+      "headers": { "Referer": "https://example.com/" },
+      "search": {
+        "url": "https://example.com/api/search?kw={kw}&page={page}",
+        "items": "data.list",
+        "fields": { "id": "id", "title": "name", "author": "author" }
+      },
+      "categories": {
+        "url": "https://example.com/api/cats",
+        "items": "data.cats",
+        "fields": { "id": "id", "name": "name" },
+        "page": {
+          "url": "https://example.com/api/list?cat={cat}&page={page}",
+          "items": "data.list",
+          "fields": { "id": "id", "title": "name" },
+          "hasMore": "data.has_more"
+        }
+      },
+      "detail": {
+        "url": "https://example.com/api/book/{id}",
+        "meta": "data.book",
+        "fields": { "id": "id", "title": "name", "cover": "cover" },
+        "chapters": {
+          "items": "data.chapters",
+          "fields": { "id": "id", "title": "name" },
+          "paged": {
+            "url": "https://example.com/api/chapters?id={id}&pn={page}",
+            "items": "data.list",
+            "total": "data.total",
+            "hasMore": "data.has_more"
+          }
+        }
+      },
+      "play": {
+        "url": "https://example.com/api/play?cid={chapterId}",
+        "field": "data.url"
+      }
+    }
+  ]
+}
+```
+
+约定：
+
+- 模板变量：`{kw}`（自动 URL 编码）、`{page}`、`{page0}`、`{page1}`、`{id}`、`{cat}`、`{chapterId}`。
+- 路径用点号分隔，纯数字段表示数组下标，例如 `data.list.0.name`；取不到时按空串处理。
+- `fields` 把输出字段映射到 JSON 路径，不写则用同名字段。
+- `search` / `categories` / `detail` / `play` 都是可选的：没有 `search` 就不出现在搜索页，没有 `paged` 就整本取回后本地每 50 集切片。
+- 引擎只发 HTTP 请求和读 JSON，**不执行任何脚本**。
+
 ## 功能
 
 **浏览与搜索**
 
-- 首页推荐、排行榜、分类树（分类表内置在 `assets/catalog.json`）
+- 首页推荐、分类、搜索都由订阅源提供
 - 跨源搜索，搜索历史，旧请求自动作废，不会出现「搜 A 显示 B」
 - 书籍详情：封面、作者/演播、简介展开、加入书架
 
@@ -57,22 +126,21 @@
 native/
 ├── AndroidManifest.xml
 ├── build.sh                     # 主包构建脚本
-├── assets/catalog.json          # 内置分类表
+├── assets/catalog.json          # 旧版内置分类表（订阅版不再使用）
 ├── libs/jsoup.jar               # 唯一的第三方依赖
 ├── res/                         # 图标、主题、字符串
 ├── docs/screenshots/            # 说明文档用截图
 ├── src/com/shiyin/app/
-│   ├── App.java                 # 全局初始化（Cookie、Prefs、分类表）
+│   ├── App.java                 # 全局初始化（Cookie、Prefs、订阅源注册）
 │   ├── MainActivity.java        # 首页 / 分类 / 书架 / 我的
 │   ├── model/                   # Book、Chapter、Cat
-│   ├── net/                     # Http（带退避重试）、Api（源1/源2 边缘函数）
-│   ├── source/                  # 四个源 + 分类表 + 分页仓库
+│   ├── net/                     # Http（带退避重试）、Api、AppUpdate
+│   ├── source/                  # 源抽象 + 订阅引擎 + 分页仓库
 │   │   ├── Source.java          # 源抽象 + ChapterPage 契约
+│   │   ├── JsonSource.java      # 订阅源引擎（模板 + JSON 路径）
+│   │   ├── Subscriptions.java   # 订阅下载、缓存、注册
 │   │   ├── ChapterRepository.java # 分页缓存与并发合并
-│   │   ├── LrtsSource.java      # 源1
-│   │   ├── KuwoSource.java      # 源2（真实服务端分页）
-│   │   ├── TingyouSource.java   # 源3
-│   │   └── PodcastSource.java   # 源4（iTunes 搜索 + RSS）
+│   │   └── Sources.java         # 源注册表（默认不含内置源）
 │   ├── play/                    # Player、PlayerService、BootReceiver
 │   ├── store/Prefs.java         # 书架、进度、设置、分页缓存
 │   ├── ui/                      # 详情、播放、搜索、后台设置、适配器
@@ -178,17 +246,16 @@ public static class ChapterPage {
 }
 ```
 
-- **源2** 走真实服务端分页：`search.kuwo.cn/r.s?stype=albuminfo&...&rn=50&pn=N`，
-  一次只取 50 条，`songnum` 给总数。实测某专辑三页 50/50/4 条、共 104 集。
-- **源1/源3/源4** 没有可用的分页接口（源1 的边缘函数忽略分页参数，移动端接口被拒），
-  默认实现是整本取回后本地切片，带 3 本 / 10 分钟内存缓存与同书请求合并。
-  它们首批仍然要等一次完整请求，只是界面按 50 条分批渲染。
+- 订阅里配了 `chapters.paged` 的源走服务端分页：一次只取 50 条，`total` / `hasMore` 决定还有没有下一页。
+- 没配 `paged` 的源用默认实现：整本取回后本地切片，带 3 本 / 10 分钟内存缓存与同书请求合并，
+  首批仍然要等一次完整请求，只是界面按 50 条分批渲染。
 - 缓存写在独立的 `shiyin_chapter_pages`（7 天、每书 24 页、全局 96 页），
   不覆盖旧的整本目录缓存；旧缓存在网络失败时兜底。
 
 ## 已知限制
 
-- 只有源2 是真正的网络分页，另外三个源首批延迟取决于整本目录大小。
+- 应用不内置内容源，首次使用必须自己添加订阅，否则首页、分类和搜索都是空状态。
+- 订阅由使用者自行提供，其可用性、合法性和内容质量由订阅作者与使用者负责。
 - 部分内容源有付费/试听限制，本客户端不做任何绕过，按接口返回原样处理。
 - 厂商「自启动」开关无法可靠读取，设置页只做引导，不保证后台常驻。
 - 被系统「强行停止」后不会自动恢复播放。
@@ -196,7 +263,8 @@ public static class ChapterPage {
 ## 免责声明
 
 本项目仅用于 Android 客户端开发与逆向工程的学习研究，不托管、不分发任何音视频内容，
-所有内容均来自第三方公开接口。请勿用于商业用途；由此产生的版权或服务条款问题由使用者自行承担。
+也不附带任何内容源。所有内容均来自使用者自行添加的第三方订阅。请勿用于商业用途；
+由此产生的版权或服务条款问题由使用者自行承担。
 若要长期使用，建议接入自己有授权的合法内容源。
 
 仓库未附带开源许可证，默认保留所有权利。

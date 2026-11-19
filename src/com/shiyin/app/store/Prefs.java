@@ -66,6 +66,53 @@ public final class Prefs {
         sp.edit().putLong("lastSync", t).apply();
     }
 
+    /* ---------------- 订阅源 ---------------- */
+
+    private static final String SUB_URLS = "sub.urls";
+
+    private static String subKey(String url) {
+        return "sub.body." + Integer.toHexString(url.hashCode()) + "." + url.length();
+    }
+
+    /** 已添加的订阅地址，保持添加顺序。 */
+    public static List<String> subscriptionUrls() {
+        List<String> out = new ArrayList<>();
+        String raw = sp.getString(SUB_URLS, "");
+        if (raw == null || raw.length() == 0) return out;
+        try {
+            JSONArray a = new JSONArray(raw);
+            for (int i = 0; i < a.length(); i++) {
+                String url = a.optString(i, "");
+                if (url.length() > 0 && !out.contains(url)) out.add(url);
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    public static String subscription(String url) {
+        return url == null ? "" : sp.getString(subKey(url), "");
+    }
+
+    public static void putSubscription(String url, String json) {
+        if (url == null || url.length() == 0) return;
+        List<String> urls = subscriptionUrls();
+        if (!urls.contains(url)) urls.add(url);
+        JSONArray a = new JSONArray();
+        for (String u : urls) a.put(u);
+        sp.edit().putString(SUB_URLS, a.toString())
+                .putString(subKey(url), json == null ? "" : json).apply();
+    }
+
+    public static void removeSubscription(String url) {
+        if (url == null || url.length() == 0) return;
+        List<String> urls = subscriptionUrls();
+        urls.remove(url);
+        JSONArray a = new JSONArray();
+        for (String u : urls) a.put(u);
+        sp.edit().putString(SUB_URLS, a.toString()).remove(subKey(url)).apply();
+    }
+
     public static boolean bootReminder() { return sp.getBoolean("bootReminder", false); }
 
     public static void setBootReminder(boolean enabled) {
@@ -320,8 +367,8 @@ public final class Prefs {
                 c.duration = o.optInt("dur", 0);
                 c.paid = o.optBoolean("paid", false);
                 c.bookId = bookId;
-                // 旧缓存未保存章节 ID，源1/源2无法用它解析播放，等待本次联网刷新。
-                if (("lrts".equals(source) || "kuwo".equals(source)) && c.id.isEmpty()) continue;
+                // 章节没有任何标识就没法取播放地址，跳过。
+                if (c.id.isEmpty() && c.url.isEmpty()) continue;
                 out.add(c);
             }
         } catch (Exception ignored) {
@@ -461,13 +508,12 @@ public final class Prefs {
             result.total = stored.length();
             int end = (int) Math.min(stored.length(), offset + Source.CHAPTER_PAGE_SIZE);
             result.hasMore = end < result.total;
-            boolean requiresId = "lrts".equals(book.source) || "kuwo".equals(book.source);
             for (int i = 0; i < stored.length(); i++) {
                 JSONObject item = stored.getJSONObject(i);
                 String title = item.optString("t").trim();
                 String id = item.optString("id").trim();
                 String url = item.optString("u").trim();
-                if (title.isEmpty() || (requiresId ? id.isEmpty() : url.isEmpty() && id.isEmpty())) {
+                if (title.isEmpty() || (id.isEmpty() && url.isEmpty())) {
                     return null;
                 }
                 if (i < offset || i >= end) continue;

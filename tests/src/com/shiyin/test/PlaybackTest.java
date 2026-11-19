@@ -22,7 +22,6 @@ import com.shiyin.app.net.AppUpdate;
 import com.shiyin.app.play.Player;
 import com.shiyin.app.play.PlayerService;
 import com.shiyin.app.source.ChapterRepository;
-import com.shiyin.app.source.KuwoSource;
 import com.shiyin.app.source.Source;
 import com.shiyin.app.source.Sources;
 import com.shiyin.app.store.Prefs;
@@ -105,6 +104,55 @@ public final class PlaybackTest extends Instrumentation {
         }
         return false;
     }
+    private void subscriptionTest() throws Exception {
+        check(Sources.byId("lrts") == null, "built-in lrts source is not registered");
+        check(Sources.byId("kuwo") == null, "built-in kuwo source is not registered");
+        check(Sources.byId("tingyou") == null, "built-in tingyou source is not registered");
+        check(Sources.byId("podcast") == null, "built-in podcast source is not registered");
+        check(Sources.byId(null) == null, "unknown source id resolves to null");
+
+        String spec = "{\"format\":\"shiyin-sources\",\"version\":1,\"sources\":[{"
+                + "\"id\":\"demo\",\"name\":\"演示源\",\"desc\":\"测试\","
+                + "\"search\":{\"url\":\"https://example.invalid/s?kw={kw}&page={page}\","
+                + "\"items\":\"data.list\",\"fields\":{\"id\":\"id\",\"title\":\"name\"}}}]}";
+        java.util.List<com.shiyin.app.source.JsonSource> parsed =
+                com.shiyin.app.source.Subscriptions.parse(spec);
+        check(parsed.size() == 1, "subscription parses one source");
+        check("demo".equals(parsed.get(0).id()), "subscription keeps source id");
+        check("演示源".equals(parsed.get(0).name()), "subscription keeps source name");
+        check(parsed.get(0).searchable(), "subscription source with search is searchable");
+
+        boolean badFormat = false;
+        try {
+            com.shiyin.app.source.Subscriptions.parse(
+                    "{\"format\":\"other\",\"sources\":[]}");
+        } catch (java.io.IOException expected) { badFormat = true; }
+        check(badFormat, "subscription rejects unknown format");
+
+        boolean emptySources = false;
+        try {
+            com.shiyin.app.source.Subscriptions.parse(
+                    "{\"format\":\"shiyin-sources\",\"sources\":[]}");
+        } catch (java.io.IOException expected) { emptySources = true; }
+        check(emptySources, "subscription rejects empty source list");
+
+        boolean noId = false;
+        try {
+            com.shiyin.app.source.Subscriptions.parse(
+                    "{\"sources\":[{\"name\":\"缺 id\"}]}");
+        } catch (java.io.IOException expected) { noId = true; }
+        check(noId, "subscription rejects source without id");
+
+        org.json.JSONObject root = new org.json.JSONObject(
+                "{\"data\":{\"list\":[{\"name\":\"A\"},{\"name\":\"B\"}]}}");
+        check("B".equals(com.shiyin.app.source.JsonSource.string(root, "data.list.1.name")),
+                "json path resolves array index");
+        check("".equals(com.shiyin.app.source.JsonSource.string(root, "data.list.9.name")),
+                "json path out of range yields empty string");
+        check("".equals(com.shiyin.app.source.JsonSource.string(root, "missing.path")),
+                "json path missing yields empty string");
+    }
+
     private void updateLogicTest() throws Exception {
         check(AppUpdate.compareVersions("2.3", "2.2") > 0, "update compares newer release");
         check(AppUpdate.compareVersions("2.3.0", "2.3") == 0, "update normalizes trailing zero");
@@ -546,33 +594,6 @@ public final class PlaybackTest extends Instrumentation {
         } finally { image.recycle(); }
     }
 
-    private void livePagingTest() throws Exception {
-        Book book = new Book("kuwo", "21711704", "老郭有新番 第一季");
-        KuwoSource source = new KuwoSource();
-        for (int page = 0; page < 3; page++) {
-            long started = SystemClock.elapsedRealtime();
-            Source.ChapterPage result = source.chapterPage(book, page);
-            check(result.total == 104 && result.page == page
-                    && result.chapters.size() == (page < 2 ? 50 : 4)
-                    && result.chapters.get(0).index == page * 50
-                    && result.hasMore == (page < 2), "live page " + (page + 1)
-                    + " count=" + result.chapters.size() + " total=104 elapsedMs="
-                    + (SystemClock.elapsedRealtime() - started));
-        }
-        Activity screen = openDetail(book);
-        try {
-            waitDirectory(screen, 50, 0);
-            screenshot("directory-page1.png");
-            clickText(screen, "下一页");
-            waitDirectory(screen, 50, 50);
-            screenshot("directory-page2.png");
-            clickText(screen, "下一页");
-            waitDirectory(screen, 4, 100);
-            screenshot("directory-page3.png");
-            check(true, "live directory pages render 1-50 / 51-100 / 101-104");
-        } finally { main(screen::finish); }
-    }
-
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
         launchArguments = arguments;
@@ -581,10 +602,35 @@ public final class PlaybackTest extends Instrumentation {
     @Override public void onStart() {
         Bundle outcome = new Bundle();
         try {
+            subscriptionTest();
             updateLogicTest();
         } catch (Throwable failure) {
             outcome.putString("stream", "FAIL update checks: " + failure);
             finish(0, outcome);
+            return;
+        }
+        if (launchArguments != null && launchArguments.getString("subs_live") != null) {
+            try {
+                String url = launchArguments.getString("subs_live");
+                com.shiyin.app.source.Subscriptions.install(url);
+                Source source = Sources.byId("demo");
+                check(source != null, "live subscription registered its source");
+                List<Book> books = source.search("测试", 1);
+                check(books.size() == 2 && "第一本".equals(books.get(0).title),
+                        "live subscription search parsed books");
+                Source.Detail detail = source.detail(books.get(0), true);
+                check(detail.chapters.size() == 3 && "第3集".equals(detail.chapters.get(2).title),
+                        "live subscription detail parsed chapters");
+                String audio = source.audio(detail.chapters.get(0));
+                check(audio.startsWith("https://"), "live subscription play url resolved");
+                com.shiyin.app.source.Subscriptions.remove(url);
+                check(Sources.byId("demo") == null, "removing subscription unregisters its source");
+                outcome.putString("stream", results.toString());
+                finish(-1, outcome);
+            } catch (Throwable failure) {
+                outcome.putString("stream", results.toString() + "FAIL live subscription " + failure);
+                finish(0, outcome);
+            }
             return;
         }
         if (launchArguments != null && "1".equals(launchArguments.getString("update_live"))) {
@@ -596,17 +642,6 @@ public final class PlaybackTest extends Instrumentation {
                 finish(-1, outcome);
             } catch (Throwable failure) {
                 outcome.putString("stream", results.toString() + "FAIL live GitHub update " + failure);
-                finish(0, outcome);
-            }
-            return;
-        }
-        if (launchArguments != null && "1".equals(launchArguments.getString("live"))) {
-            try {
-                livePagingTest();
-                outcome.putString("stream", results.toString());
-                finish(-1, outcome);
-            } catch (Throwable failure) {
-                outcome.putString("stream", results.toString() + "FAIL " + failure);
                 finish(0, outcome);
             }
             return;

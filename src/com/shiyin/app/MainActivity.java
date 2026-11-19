@@ -14,6 +14,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
+import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
@@ -22,12 +23,11 @@ import android.widget.TextView;
 
 import com.shiyin.app.model.Book;
 import com.shiyin.app.model.Cat;
-import com.shiyin.app.net.Api;
 import com.shiyin.app.net.AppUpdate;
 import com.shiyin.app.play.Player;
-import com.shiyin.app.source.Catalog;
 import com.shiyin.app.source.Source;
 import com.shiyin.app.source.Sources;
+import com.shiyin.app.source.Subscriptions;
 import com.shiyin.app.store.Prefs;
 import com.shiyin.app.ui.BookAdapter;
 import com.shiyin.app.ui.DetailActivity;
@@ -54,6 +54,11 @@ public class MainActivity extends Activity implements Player.Listener {
     private int tab = 0;
     private volatile int updateRequestGeneration;
     private volatile boolean checkingUpdate;
+
+    private static final class Section {
+        String label = "";
+        List<Book> books = new ArrayList<>();
+    }
 
     private static final class CategoryState {
         int selectedIndex;
@@ -291,48 +296,51 @@ public class MainActivity extends Activity implements Player.Listener {
         body.addView(Widgets.loading(this, "正在加载推荐…"));
         setPage(page);
 
-        Bg.run(new java.util.concurrent.Callable<Object[]>() {
+        if (Sources.isEmpty()) {
+            body.removeAllViews();
+            body.addView(Widgets.empty(this, "还没有内容源\n到「我的 → 内容源」添加在线订阅"));
+            body.addView(retryButton());
+            return;
+        }
+
+        Bg.run(new java.util.concurrent.Callable<List<Section>>() {
             @Override
-            public Object[] call() throws Exception {
-                Object[] out = new Object[2];
-                try {
-                    out[0] = Api.home();
-                } catch (Exception e) {
-                    out[0] = null;
-                }
-                try {
-                    out[1] = Api.rank();
-                } catch (Exception e) {
-                    out[1] = null;
+            public List<Section> call() {
+                List<Section> out = new ArrayList<>();
+                for (Source s : Sources.all()) {
+                    List<Book> books = new ArrayList<>();
+                    try {
+                        if (s instanceof com.shiyin.app.source.JsonSource
+                                && ((com.shiyin.app.source.JsonSource) s).hasHome()) {
+                            books = ((com.shiyin.app.source.JsonSource) s).home();
+                        } else if (s.hasCats()) {
+                            List<Cat> cats = s.cats();
+                            if (!cats.isEmpty()) books = s.page(cats.get(0), 1).books;
+                        }
+                    } catch (Exception ignored) {
+                        // 单个源失败不影响其它源
+                    }
+                    if (books == null || books.isEmpty()) continue;
+                    Section section = new Section();
+                    section.label = s.name();
+                    section.books = books;
+                    out.add(section);
                 }
                 return out;
             }
-        }, new Bg.Cb<Object[]>() {
+        }, new Bg.Cb<List<Section>>() {
             @Override
-            public void ok(Object[] v) {
-                if (tab != 0) return;
+            public void ok(List<Section> sections) {
+                if (tab != 0 || isFinishing() || isDestroyed()) return;
                 body.removeAllViews();
-                Api.Home home = (Api.Home) v[0];
-                Api.Rank rank = (Api.Rank) v[1];
-
-                if (home == null && rank == null) {
+                if (sections.isEmpty()) {
                     body.addView(Widgets.empty(MainActivity.this,
-                            "网络不太行，下拉重试\n点「我的 → 重新加载」也行"));
+                            "订阅源暂时没有返回内容\n可以试试搜索，或稍后重试"));
                     body.addView(retryButton());
                     return;
                 }
-
-                if (rank != null && !rank.books.isEmpty()) {
-                    addBookSection(body, "排行榜", rank.books, 12);
-                }
-                if (home != null && !home.books.isEmpty()) {
-                    addBookSection(body, "为你推荐", home.books, home.books.size());
-                }
-                if (home != null) {
-                    for (Api.Section section : home.sections) {
-                        addBookSection(body, com.shiyin.app.util.Scrub.section(section.label),
-                                section.books, section.books.size());
-                    }
+                for (Section section : sections) {
+                    addBookSection(body, section.label, section.books, section.books.size());
                 }
                 body.addView(Ui.spacer(MainActivity.this, 24));
             }
@@ -375,6 +383,12 @@ public class MainActivity extends Activity implements Player.Listener {
 
     private void showCats() {
         LinearLayout page = Widgets.vbox(this);
+        if (Sources.isEmpty()) {
+            page.addView(Widgets.empty(this, "还没有内容源\n到「我的 → 内容源」添加在线订阅"));
+            page.addView(retryButton());
+            setPage(page);
+            return;
+        }
         ListView lv = new ListView(this);
         lv.setDivider(null);
         lv.setDividerHeight(0);
@@ -382,11 +396,12 @@ public class MainActivity extends Activity implements Player.Listener {
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         final List<Cat> roots = new ArrayList<>();
-        roots.addAll(Catalog.lrts());
-        roots.addAll(Catalog.kuwo());
+        final TextView emptyHint = Ui.text(this, "正在加载分类…", 12.5f, Ui.DIM2);
+        emptyHint.setPadding(Ui.dp(this, 16), Ui.dp(this, 14), Ui.dp(this, 16), Ui.dp(this, 14));
+        page.addView(emptyHint);
 
         // 分类用自定义行，直接建一个内部 adapter
-        lv.setAdapter(new android.widget.BaseAdapter() {
+        final android.widget.BaseAdapter adapter = new android.widget.BaseAdapter() {
             @Override
             public int getCount() {
                 return roots.size();
@@ -447,9 +462,38 @@ public class MainActivity extends Activity implements Player.Listener {
                 });
                 return row;
             }
-        });
+        };
+        lv.setAdapter(adapter);
         page.addView(lv);
         setPage(page);
+
+        Bg.run(() -> {
+            List<Cat> loaded = new ArrayList<>();
+            for (Source s : Sources.all()) {
+                if (!s.hasCats()) continue;
+                try {
+                    loaded.addAll(s.cats());
+                } catch (Exception ignored) {
+                }
+            }
+            return loaded;
+        }, new Bg.Cb<List<Cat>>() {
+            @Override public void ok(List<Cat> v) {
+                if (tab != 1 || isFinishing() || isDestroyed()) return;
+                roots.clear();
+                roots.addAll(v);
+                adapter.notifyDataSetChanged();
+                if (roots.isEmpty()) {
+                    emptyHint.setText("这个订阅没有提供分类，可以直接用搜索");
+                } else {
+                    emptyHint.setVisibility(View.GONE);
+                }
+            }
+
+            @Override public void fail(Exception e) {
+                emptyHint.setText("分类加载失败：" + e.getMessage());
+            }
+        });
     }
 
     private void showCatBooks(final Cat root) {
@@ -562,7 +606,9 @@ public class MainActivity extends Activity implements Player.Listener {
         Bg.run(new java.util.concurrent.Callable<Source.Page>() {
             @Override
             public Source.Page call() throws Exception {
-                return Sources.byId(leaf.source).page(leaf, pn);
+                Source source = Sources.byId(leaf.source);
+                if (source == null) throw new java.io.IOException("内容源未安装");
+                return source.page(leaf, pn);
             }
         }, new Bg.Cb<Source.Page>() {
             @Override
@@ -674,31 +720,26 @@ public class MainActivity extends Activity implements Player.Listener {
                 }));
 
         body.addView(Widgets.sectionHeader(this, "内容源", null, null));
-        for (final Source s : Sources.all()) {
-            body.addView(sourceRow(s));
+        List<Source> installed = Sources.all();
+        if (installed.isEmpty()) {
+            TextView tip = Ui.text(this, "还没有内容源。添加在线订阅后，"
+                    + "首页、分类和搜索才会出现内容。", 12f, Ui.DIM2);
+            tip.setPadding(Ui.dp(this, 16), Ui.dp(this, 2), Ui.dp(this, 16), Ui.dp(this, 10));
+            tip.setLineSpacing(Ui.dp(this, 3), 1f);
+            body.addView(tip);
+        } else {
+            for (final Source s : installed) {
+                body.addView(sourceRow(s));
+            }
+        }
+        body.addView(settingRow("添加订阅", "粘贴订阅 JSON 地址",
+                v -> promptAddSubscription()));
+        if (!Subscriptions.urls().isEmpty()) {
+            body.addView(settingRow("管理订阅", Subscriptions.urls().size() + " 个地址",
+                    v -> showSubscriptions()));
         }
 
         body.addView(Widgets.sectionHeader(this, "其他", null, null));
-        body.addView(settingRow("重新加载配置", "拉一次播放节点",
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        Bg.fire(new Runnable() {
-                            @Override
-                            public void run() {
-                                Api.syncRemoteConfig();
-                                Bg.ui(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        Ui.toast(MainActivity.this, "配置已刷新");
-                                        showMine();
-                                    }
-                                });
-                            }
-                        });
-                    }
-                }));
-
         body.addView(settingRow("清空图片缓存", "", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -718,8 +759,8 @@ public class MainActivity extends Activity implements Player.Listener {
         body.addView(Widgets.sectionHeader(this, "关于", null, null));
         String version = installedVersion();
         TextView about = Ui.text(this, "拾音 " + version + " · 原生版\n"
-                        + "内容全部来自公开接口，仅供学习研究使用。\n"
-                        + "内容源固定内置。",
+                        + "应用本身不内置内容源，内容由你自行添加的订阅提供。\n"
+                        + "仅供学习研究使用，请确保你有权访问相应内容。",
                 12f, Ui.DIM2);
         about.setPadding(Ui.dp(this, 16), Ui.dp(this, 4), Ui.dp(this, 16), Ui.dp(this, 10));
         about.setLineSpacing(Ui.dp(this, 3), 1f);
@@ -730,6 +771,105 @@ public class MainActivity extends Activity implements Player.Listener {
         body.addView(Ui.spacer(this, 24));
 
         setPage(sv);
+    }
+
+    private void promptAddSubscription() {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setHint("https://…/sources.json");
+        input.setHintTextColor(Ui.DIM2);
+        input.setTextColor(Ui.TEXT);
+        input.setTextSize(14f);
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        LinearLayout box = new LinearLayout(this);
+        int side = Ui.dp(this, 20);
+        box.setPadding(side, Ui.dp(this, 8), side, 0);
+        box.addView(input, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        new AlertDialog.Builder(this).setTitle("添加订阅源").setView(box)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("添加", (dialog, which) ->
+                        installSubscription(input.getText().toString().trim()))
+                .show();
+    }
+
+    private void installSubscription(final String url) {
+        if (url.length() == 0) {
+            Ui.toast(this, "先填订阅地址");
+            return;
+        }
+        Ui.toast(this, "正在下载订阅…");
+        Bg.run(() -> {
+            Subscriptions.install(url);
+            return Sources.all().size();
+        }, new Bg.Cb<Integer>() {
+            @Override public void ok(Integer count) {
+                if (isFinishing() || isDestroyed()) return;
+                Ui.toast(MainActivity.this, "订阅已添加，共 " + count + " 个源");
+                showMine();
+            }
+
+            @Override public void fail(Exception e) {
+                if (isFinishing() || isDestroyed()) return;
+                new AlertDialog.Builder(MainActivity.this).setTitle("订阅添加失败")
+                        .setMessage(e.getMessage() == null ? "下载或解析失败" : e.getMessage())
+                        .setPositiveButton("知道了", null).show();
+            }
+        });
+    }
+
+    private void showSubscriptions() {
+        final List<String> urls = Subscriptions.urls();
+        if (urls.isEmpty()) {
+            Ui.toast(this, "还没有订阅");
+            return;
+        }
+        new AlertDialog.Builder(this).setTitle("管理订阅")
+                .setItems(urls.toArray(new String[0]), (dialog, which) ->
+                        showSubscriptionActions(urls.get(which)))
+                .setNegativeButton("关闭", null).show();
+    }
+
+    private void showSubscriptionActions(final String url) {
+        new AlertDialog.Builder(this).setTitle(url)
+                .setItems(new String[]{"刷新", "删除"}, (dialog, which) -> {
+                    if (which == 0) refreshSubscription(url);
+                    else confirmRemoveSubscription(url);
+                })
+                .setNegativeButton("取消", null).show();
+    }
+
+    private void refreshSubscription(final String url) {
+        Ui.toast(this, "正在刷新…");
+        Bg.run(() -> {
+            Subscriptions.install(url);
+            return Sources.all().size();
+        }, new Bg.Cb<Integer>() {
+            @Override public void ok(Integer count) {
+                if (isFinishing() || isDestroyed()) return;
+                Ui.toast(MainActivity.this, "已刷新，共 " + count + " 个源");
+                showMine();
+            }
+
+            @Override public void fail(Exception e) {
+                if (isFinishing() || isDestroyed()) return;
+                new AlertDialog.Builder(MainActivity.this).setTitle("刷新失败")
+                        .setMessage(e.getMessage() == null ? "下载或解析失败" : e.getMessage())
+                        .setPositiveButton("知道了", null).show();
+            }
+        });
+    }
+
+    private void confirmRemoveSubscription(final String url) {
+        new AlertDialog.Builder(this).setTitle("删除这个订阅？")
+                .setMessage(url + "\n\n该订阅提供的内容源会一起移除，书架里的书将无法继续播放。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("删除", (dialog, which) -> {
+                    Subscriptions.remove(url);
+                    Ui.toast(this, "已删除");
+                    showMine();
+                }).show();
     }
 
     private String installedVersion() {

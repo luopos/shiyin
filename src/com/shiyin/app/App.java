@@ -2,10 +2,8 @@ package com.shiyin.app;
 
 import android.app.Application;
 
-import com.shiyin.app.net.Api;
-import com.shiyin.app.source.Catalog;
+import com.shiyin.app.source.Subscriptions;
 import com.shiyin.app.store.Prefs;
-import com.shiyin.app.util.Bg;
 
 import java.net.CookieHandler;
 import java.net.CookieManager;
@@ -23,14 +21,7 @@ public class App extends Application {
         CookieHandler.setDefault(cm);
 
         Prefs.init(this);
-        Catalog.load(this);
-
-        // 播放节点会变，后台拉一次；失败就用内置的
-        Bg.fire(new Runnable() {
-            @Override
-            public void run() {
-                Api.syncRemoteConfig();
-            }
-        });
+        // 订阅源用本地缓存注册，断网也能看到已订阅的源
+        Subscriptions.reload();
     }
 }

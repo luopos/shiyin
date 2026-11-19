@@ -41,9 +41,12 @@ mkdir -p "$OUT/gen" "$OUT/classes" "$OUT/dex"
 echo "== 1/7 编译资源 =="
 "$AAPT2" compile --dir res -o "$OUT/res.zip"
 echo "== 2/7 链接资源 =="
+# 订阅版不再需要 assets；目录不存在时不传 -A，否则 aapt2 直接报错。
+ASSETS_ARG=()
+[ -d assets ] && ASSETS_ARG=(-A assets)
 "$AAPT2" link -o "$OUT/base.apk" -I "$PLATFORM/android.jar" \
     --manifest AndroidManifest.xml -R "$OUT/res.zip" --java "$OUT/gen" \
-    --auto-add-overlay -A assets
+    --auto-add-overlay "${ASSETS_ARG[@]}"
 
 echo "== 3/7 编译 Java =="
 find src "$OUT/gen" -name "*.java" | LC_ALL=C sort > "$OUT/sources.txt"

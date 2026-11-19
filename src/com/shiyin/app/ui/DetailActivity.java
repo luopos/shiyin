@@ -130,7 +130,7 @@ public class DetailActivity extends Activity {
 
         Intent it = getIntent();
         book.source = it.getStringExtra("source");
-        if (book.source == null) book.source = "lrts";
+        if (book.source == null) book.source = "";
         book.id = it.getStringExtra("id");
         if (book.id == null) book.id = "";
         book.title = it.getStringExtra("title");

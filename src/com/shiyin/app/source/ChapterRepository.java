@@ -82,7 +82,9 @@ public final class ChapterRepository {
             task = PENDING.get(key);
             if (task == null) {
                 task = new FutureTask<>(() -> {
-                    Source.ChapterPage result = Sources.forBook(requestBook).chapterPage(requestBook, page);
+                    Source source = Sources.forBook(requestBook);
+                    if (source == null) throw new IOException("这个内容源没有安装，请到「我的 → 内容源」添加订阅");
+                    Source.ChapterPage result = source.chapterPage(requestBook, page);
                     validate(result, page);
                     Source.ChapterPage snapshot = copy(result);
                     Entry entry = new Entry(snapshot, System.currentTimeMillis());
