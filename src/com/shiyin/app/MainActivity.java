@@ -737,9 +737,13 @@ public class MainActivity extends Activity implements Player.Listener {
         }
         body.addView(settingRow("添加订阅", "粘贴订阅 JSON 地址",
                 v -> promptAddSubscription()));
-        if (!Subscriptions.urls().isEmpty()) {
-            body.addView(settingRow("管理订阅", Subscriptions.urls().size() + " 个地址",
+        List<String> subs = Subscriptions.urls();
+        if (!subs.isEmpty()) {
+            body.addView(settingRow("管理订阅", subs.size() + " 个地址",
                     v -> showSubscriptions()));
+            body.addView(settingRow("刷新全部订阅",
+                    "缓存 " + (Subscriptions.CACHE_MAX_AGE_MS / 3600000L) + " 小时，过期自动更新",
+                    v -> refreshAllSubscriptions()));
         }
 
         body.addView(Widgets.sectionHeader(this, "其他", null, null));
@@ -828,15 +832,21 @@ public class MainActivity extends Activity implements Player.Listener {
             Ui.toast(this, "还没有订阅");
             return;
         }
+        String[] labels = new String[urls.size()];
+        for (int i = 0; i < urls.size(); i++) {
+            labels[i] = urls.get(i) + "\n" + Subscriptions.cacheAge(urls.get(i));
+        }
         new AlertDialog.Builder(this).setTitle("管理订阅")
-                .setItems(urls.toArray(new String[0]), (dialog, which) ->
+                .setItems(labels, (dialog, which) ->
                         showSubscriptionActions(urls.get(which)))
                 .setNegativeButton("关闭", null).show();
     }
 
     private void showSubscriptionActions(final String url) {
         new AlertDialog.Builder(this).setTitle(url)
-                .setItems(new String[]{"刷新", "删除"}, (dialog, which) -> {
+                .setMessage(Subscriptions.cacheAge(url)
+                        + "\n订阅清单有本地缓存，启动时不会重复下载。")
+                .setItems(new String[]{"立即刷新", "删除"}, (dialog, which) -> {
                     if (which == 0) refreshSubscription(url);
                     else confirmRemoveSubscription(url);
                 })
@@ -860,6 +870,32 @@ public class MainActivity extends Activity implements Player.Listener {
                 new AlertDialog.Builder(MainActivity.this).setTitle("刷新失败")
                         .setMessage(e.getMessage() == null ? "下载或解析失败" : e.getMessage())
                         .setPositiveButton("知道了", null).show();
+            }
+        });
+    }
+
+    private void refreshAllSubscriptions() {
+        if (Subscriptions.urls().isEmpty()) {
+            Ui.toast(this, "还没有订阅");
+            return;
+        }
+        Ui.toast(this, "正在刷新订阅…");
+        Bg.run(Subscriptions::refreshAll, new Bg.Cb<List<String>>() {
+            @Override public void ok(List<String> failed) {
+                if (isFinishing() || isDestroyed()) return;
+                if (failed.isEmpty()) {
+                    Ui.toast(MainActivity.this, "订阅已全部更新");
+                } else {
+                    new AlertDialog.Builder(MainActivity.this).setTitle("部分订阅刷新失败")
+                            .setMessage(android.text.TextUtils.join("\n\n", failed))
+                            .setPositiveButton("知道了", null).show();
+                }
+                showMine();
+            }
+
+            @Override public void fail(Exception e) {
+                if (isFinishing() || isDestroyed()) return;
+                Ui.toast(MainActivity.this, e.getMessage() == null ? "刷新失败" : e.getMessage());
             }
         });
     }

@@ -105,6 +105,8 @@ public final class PlaybackTest extends Instrumentation {
         return false;
     }
     private void subscriptionTest() throws Exception {
+        // 测试跑在自己的进程里，App.onCreate 不会执行，存储要自己初始化。
+        com.shiyin.app.store.Prefs.init(getTargetContext());
         check(Sources.byId("lrts") == null, "built-in lrts source is not registered");
         check(Sources.byId("kuwo") == null, "built-in kuwo source is not registered");
         check(Sources.byId("tingyou") == null, "built-in tingyou source is not registered");
@@ -151,6 +153,42 @@ public final class PlaybackTest extends Instrumentation {
                 "json path out of range yields empty string");
         check("".equals(com.shiyin.app.source.JsonSource.string(root, "missing.path")),
                 "json path missing yields empty string");
+
+        // 订阅清单缓存：有效期内启动不联网，过期才刷新。
+        long now = System.currentTimeMillis();
+        long ttl = com.shiyin.app.source.Subscriptions.CACHE_MAX_AGE_MS;
+        check(ttl >= 60L * 60 * 1000, "subscription cache keeps a usable max age");
+        check(!com.shiyin.app.source.Subscriptions.isStale(now, now),
+                "fresh subscription cache is not stale");
+        check(!com.shiyin.app.source.Subscriptions.isStale(now - ttl + 1000, now),
+                "subscription cache is reused inside its max age");
+        check(com.shiyin.app.source.Subscriptions.isStale(now - ttl - 1000, now),
+                "subscription cache expires after its max age");
+        check(com.shiyin.app.source.Subscriptions.isStale(0, now),
+                "subscription cache without a timestamp is stale");
+        check(!com.shiyin.app.source.Subscriptions.isStale(now + 60000, now),
+                "subscription cache tolerates a clock rollback");
+
+        String cacheUrl = "https://example.invalid/cache-probe.json";
+        try {
+            com.shiyin.app.store.Prefs.putSubscription(cacheUrl, spec);
+            check(com.shiyin.app.store.Prefs.subscriptionSavedAt(cacheUrl) > 0,
+                    "subscription cache records when it was written");
+            check(!com.shiyin.app.source.Subscriptions.isStale(cacheUrl),
+                    "just saved subscription cache counts as fresh");
+            check(com.shiyin.app.source.Subscriptions.cacheAge(cacheUrl).contains("更新"),
+                    "subscription cache age is human readable");
+            // example.invalid 永远解析不了：这一步能过就说明注册只读了本地缓存。
+            com.shiyin.app.source.Subscriptions.reload();
+            check(Sources.byId("demo") != null,
+                    "reload registers sources from the local cache without network");
+        } finally {
+            com.shiyin.app.source.Subscriptions.remove(cacheUrl);
+        }
+        check(Sources.byId("demo") == null,
+                "removing the cached subscription unregisters its source");
+        check(com.shiyin.app.store.Prefs.subscriptionSavedAt(cacheUrl) == 0,
+                "removing the subscription drops its cache timestamp");
     }
 
     private void updateLogicTest() throws Exception {
@@ -613,6 +651,8 @@ public final class PlaybackTest extends Instrumentation {
             try {
                 String url = launchArguments.getString("subs_url");
                 com.shiyin.app.source.Subscriptions.install(url);
+                check(!com.shiyin.app.source.Subscriptions.isStale(url),
+                        "installed subscription is cached and fresh, so startup skips the network");
                 java.util.List<Source> all = Sources.all();
                 check(!all.isEmpty(), "remote subscription registered sources");
                 Source first = null;
@@ -630,6 +670,47 @@ public final class PlaybackTest extends Instrumentation {
                 finish(-1, outcome);
             } catch (Throwable failure) {
                 outcome.putString("stream", results.toString() + "FAIL remote subscription " + failure);
+                finish(0, outcome);
+            }
+            return;
+        }
+        if (launchArguments != null && launchArguments.getString("subs_cache") != null) {
+            try {
+                String url = launchArguments.getString("subs_cache");
+                com.shiyin.app.source.Subscriptions.install(url);
+                check(com.shiyin.app.source.Subscriptions.urls().size() == 1,
+                        "cache check starts from a single subscription");
+                check(!com.shiyin.app.source.Subscriptions.isStale(url),
+                        "fresh subscription cache is valid");
+                check(com.shiyin.app.source.Subscriptions.refreshStale() == 0,
+                        "fresh cache skips the network entirely");
+
+                // 把时间戳改到有效期之前，模拟隔天启动。
+                SharedPreferences prefs = getTargetContext().getSharedPreferences("shiyin", 0);
+                SharedPreferences.Editor editor = prefs.edit();
+                long expired = System.currentTimeMillis()
+                        - com.shiyin.app.source.Subscriptions.CACHE_MAX_AGE_MS - 60000;
+                int aged = 0;
+                for (String key : prefs.getAll().keySet()) {
+                    if (key.startsWith("sub.at.")) {
+                        editor.putLong(key, expired);
+                        aged++;
+                    }
+                }
+                editor.commit();
+                check(aged > 0, "subscription cache timestamp can be aged for the test");
+                check(com.shiyin.app.source.Subscriptions.isStale(url),
+                        "expired subscription cache is stale");
+                check(com.shiyin.app.source.Subscriptions.refreshStale() == 1,
+                        "expired cache is refreshed exactly once in the background");
+                check(!com.shiyin.app.source.Subscriptions.isStale(url),
+                        "background refresh renews the cache timestamp");
+                check(!Sources.all().isEmpty(), "refreshed subscription keeps its sources");
+                outcome.putString("stream", results.toString() + "CACHE "
+                        + com.shiyin.app.source.Subscriptions.cacheAge(url));
+                finish(-1, outcome);
+            } catch (Throwable failure) {
+                outcome.putString("stream", results.toString() + "FAIL subscription cache " + failure);
                 finish(0, outcome);
             }
             return;

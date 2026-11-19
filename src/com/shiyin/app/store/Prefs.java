@@ -74,6 +74,10 @@ public final class Prefs {
         return "sub.body." + Integer.toHexString(url.hashCode()) + "." + url.length();
     }
 
+    private static String subStampKey(String url) {
+        return "sub.at." + Integer.toHexString(url.hashCode()) + "." + url.length();
+    }
+
     /** 已添加的订阅地址，保持添加顺序。 */
     public static List<String> subscriptionUrls() {
         List<String> out = new ArrayList<>();
@@ -94,6 +98,12 @@ public final class Prefs {
         return url == null ? "" : sp.getString(subKey(url), "");
     }
 
+    /** 订阅缓存的写入时间；0 表示老版本留下的缓存，没有时间戳。 */
+    public static long subscriptionSavedAt(String url) {
+        if (url == null || url.length() == 0) return 0L;
+        return sp.getLong(subStampKey(url), 0L);
+    }
+
     public static void putSubscription(String url, String json) {
         if (url == null || url.length() == 0) return;
         List<String> urls = subscriptionUrls();
@@ -101,7 +111,8 @@ public final class Prefs {
         JSONArray a = new JSONArray();
         for (String u : urls) a.put(u);
         sp.edit().putString(SUB_URLS, a.toString())
-                .putString(subKey(url), json == null ? "" : json).apply();
+                .putString(subKey(url), json == null ? "" : json)
+                .putLong(subStampKey(url), System.currentTimeMillis()).apply();
     }
 
     public static void removeSubscription(String url) {
@@ -110,7 +121,8 @@ public final class Prefs {
         urls.remove(url);
         JSONArray a = new JSONArray();
         for (String u : urls) a.put(u);
-        sp.edit().putString(SUB_URLS, a.toString()).remove(subKey(url)).apply();
+        sp.edit().putString(SUB_URLS, a.toString())
+                .remove(subKey(url)).remove(subStampKey(url)).apply();
     }
 
     public static boolean bootReminder() { return sp.getBoolean("bootReminder", false); }
