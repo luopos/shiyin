@@ -710,15 +710,6 @@ public class MainActivity extends Activity implements Player.Listener {
                     }
                 }));
 
-        String host = Prefs.playHost();
-        body.addView(settingRow("播放节点", host.length() == 0 ? "默认" : host,
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        Ui.toast(MainActivity.this, "节点会随远程配置自动更新");
-                    }
-                }));
-
         body.addView(Widgets.sectionHeader(this, "内容源", null, null));
         List<Source> installed = Sources.all();
         if (installed.isEmpty()) {
@@ -981,7 +972,7 @@ public class MainActivity extends Activity implements Player.Listener {
         col.addView(d);
         row.addView(col);
 
-        TextView tag = Ui.text(this, "内置", 11f, Ui.TEAL);
+        TextView tag = Ui.text(this, "订阅", 11f, Ui.TEAL);
         tag.setPadding(Ui.dp(this, 8), Ui.dp(this, 3), Ui.dp(this, 8), Ui.dp(this, 3));
         tag.setBackground(Ui.round(0xFF10251F, 10, this));
         row.addView(tag);

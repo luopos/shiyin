@@ -609,6 +609,31 @@ public final class PlaybackTest extends Instrumentation {
             finish(0, outcome);
             return;
         }
+        if (launchArguments != null && launchArguments.getString("subs_url") != null) {
+            try {
+                String url = launchArguments.getString("subs_url");
+                com.shiyin.app.source.Subscriptions.install(url);
+                java.util.List<Source> all = Sources.all();
+                check(!all.isEmpty(), "remote subscription registered sources");
+                Source first = null;
+                for (Source s : all) if (s.searchable()) { first = s; break; }
+                check(first != null, "remote subscription has a searchable source");
+                List<Book> books = first.search("三国", 1);
+                check(!books.isEmpty(), "remote subscription search returned books: " + first.id());
+                Source.Detail detail = first.detail(books.get(0), true);
+                check(!detail.chapters.isEmpty(), "remote subscription detail returned chapters: " + first.id());
+                String audio = first.audio(detail.chapters.get(0));
+                check(audio.startsWith("http"), "remote subscription play url resolved: " + first.id());
+                outcome.putString("stream", results.toString() + "SOURCES "
+                        + all.size() + " FIRST " + first.id() + " BOOKS " + books.size()
+                        + " CHAPTERS " + detail.chapters.size());
+                finish(-1, outcome);
+            } catch (Throwable failure) {
+                outcome.putString("stream", results.toString() + "FAIL remote subscription " + failure);
+                finish(0, outcome);
+            }
+            return;
+        }
         if (launchArguments != null && launchArguments.getString("subs_live") != null) {
             try {
                 String url = launchArguments.getString("subs_live");
