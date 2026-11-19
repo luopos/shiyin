@@ -1,8 +1,14 @@
 package com.shiyin.app;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Typeface;
+import android.net.Uri;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
@@ -17,6 +23,7 @@ import android.widget.TextView;
 import com.shiyin.app.model.Book;
 import com.shiyin.app.model.Cat;
 import com.shiyin.app.net.Api;
+import com.shiyin.app.net.AppUpdate;
 import com.shiyin.app.play.Player;
 import com.shiyin.app.source.Catalog;
 import com.shiyin.app.source.Source;
@@ -45,6 +52,8 @@ public class MainActivity extends Activity implements Player.Listener {
     private final TextView[] tabs = new TextView[4];
 
     private int tab = 0;
+    private volatile int updateRequestGeneration;
+    private volatile boolean checkingUpdate;
 
     private static final class CategoryState {
         int selectedIndex;
@@ -635,6 +644,8 @@ public class MainActivity extends Activity implements Player.Listener {
     /* ---------------- 我的 ---------------- */
 
     private void showMine() {
+        ++updateRequestGeneration;
+        checkingUpdate = false;
         ScrollView sv = new ScrollView(this);
         LinearLayout body = Widgets.vbox(this);
         sv.addView(body);
@@ -705,16 +716,92 @@ public class MainActivity extends Activity implements Player.Listener {
         }));
 
         body.addView(Widgets.sectionHeader(this, "关于", null, null));
-        TextView about = Ui.text(this, "拾音 2.2 · 原生版\n"
+        String version = installedVersion();
+        TextView about = Ui.text(this, "拾音 " + version + " · 原生版\n"
                         + "内容全部来自公开接口，仅供学习研究使用。\n"
-                        + "本版本移除了在线源更新，源清单固定内置。",
+                        + "内容源固定内置。",
                 12f, Ui.DIM2);
-        about.setPadding(Ui.dp(this, 16), Ui.dp(this, 4), Ui.dp(this, 16), Ui.dp(this, 20));
+        about.setPadding(Ui.dp(this, 16), Ui.dp(this, 4), Ui.dp(this, 16), Ui.dp(this, 10));
         about.setLineSpacing(Ui.dp(this, 3), 1f);
         body.addView(about);
+        body.addView(settingRow("检查更新", "GitHub 发布", v -> checkForUpdate(version)));
+        body.addView(settingRow("GitHub 项目", "github.com/luopos/shiyin",
+                v -> openProjectPage(AppUpdate.PROJECT_URL)));
         body.addView(Ui.spacer(this, 24));
 
         setPage(sv);
+    }
+
+    private String installedVersion() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (PackageManager.NameNotFoundException e) {
+            return "未知";
+        }
+    }
+
+    private void checkForUpdate(String version) {
+        if (checkingUpdate) return;
+        checkingUpdate = true;
+        final int request = ++updateRequestGeneration;
+        Ui.toast(this, "正在检查更新…");
+        Bg.run(AppUpdate::latest, new Bg.Cb<AppUpdate.Release>() {
+            @Override public void ok(AppUpdate.Release release) {
+                if (!canShowUpdateResult(request)) return;
+                final int comparison;
+                try {
+                    comparison = AppUpdate.compareVersions(release.version, version);
+                } catch (IllegalArgumentException e) {
+                    showUpdateDialog("无法比较版本", "当前版本：" + version
+                            + "\nGitHub 正式版本：" + release.version, release.pageUrl);
+                    return;
+                }
+                if (comparison > 0) {
+                    showUpdateDialog("发现新版本", "当前版本：" + version + "\n可更新到："
+                            + release.version, release.pageUrl);
+                } else {
+                    showUpdateDialog(comparison == 0 ? "已是最新版本" : "当前版本比正式发布更新",
+                            "当前版本：" + version + "\nGitHub 正式版本：" + release.version,
+                            release.pageUrl);
+                }
+            }
+
+            @Override public void fail(Exception e) {
+                if (canShowUpdateResult(request)) {
+                    showUpdateDialog("检查更新失败", e.getMessage(), AppUpdate.RELEASES_URL);
+                }
+            }
+        });
+    }
+
+    private boolean canShowUpdateResult(int request) {
+        if (request != updateRequestGeneration) return false;
+        checkingUpdate = false;
+        return !isFinishing() && !isDestroyed() && tab == 3;
+    }
+
+    private void showUpdateDialog(String title, String message, String pageUrl) {
+        new AlertDialog.Builder(this).setTitle(title).setMessage(message)
+                .setNegativeButton("关闭", null)
+                .setPositiveButton("打开发布页", (dialog, which) -> openProjectPage(pageUrl))
+                .show();
+    }
+
+    private void openProjectPage(String url) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    .addCategory(Intent.CATEGORY_BROWSABLE));
+        } catch (ActivityNotFoundException e) {
+            new AlertDialog.Builder(this).setTitle("无法打开链接").setMessage(url)
+                    .setNegativeButton("关闭", null)
+                    .setPositiveButton("复制链接", (dialog, which) -> {
+                        ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+                        if (clipboard != null) {
+                            clipboard.setPrimaryClip(ClipData.newPlainText("GitHub", url));
+                            Ui.toast(this, "已复制链接");
+                        }
+                    }).show();
+        }
     }
 
     private View settingRow(String title, String value, View.OnClickListener onClick) {

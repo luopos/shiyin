@@ -18,6 +18,7 @@ import android.widget.TextView;
 
 import com.shiyin.app.model.Book;
 import com.shiyin.app.model.Chapter;
+import com.shiyin.app.net.AppUpdate;
 import com.shiyin.app.play.Player;
 import com.shiyin.app.play.PlayerService;
 import com.shiyin.app.source.ChapterRepository;
@@ -104,6 +105,98 @@ public final class PlaybackTest extends Instrumentation {
         }
         return false;
     }
+    private void updateLogicTest() throws Exception {
+        check(AppUpdate.compareVersions("2.3", "2.2") > 0, "update compares newer release");
+        check(AppUpdate.compareVersions("2.3.0", "2.3") == 0, "update normalizes trailing zero");
+        check(AppUpdate.compareVersions("2.10", "2.9") > 0, "update compares numeric components");
+        check(AppUpdate.compareVersions("2.2", "2.3") < 0, "update detects older installed version");
+        boolean invalidRejected = false;
+        try { AppUpdate.compareVersions("2.3-beta", "2.3"); }
+        catch (IllegalArgumentException expected) { invalidRejected = true; }
+        check(invalidRejected, "update rejects unsupported version syntax");
+
+        org.json.JSONObject release = new org.json.JSONObject();
+        release.put("tag_name", "v2.3");
+        release.put("draft", false);
+        release.put("prerelease", false);
+        org.json.JSONArray assets = new org.json.JSONArray();
+        org.json.JSONObject apk = new org.json.JSONObject();
+        apk.put("name", "shiyin-2.3.apk");
+        apk.put("state", "uploaded");
+        apk.put("size", 1234);
+        assets.put(apk);
+        release.put("assets", assets);
+        AppUpdate.Release parsed = AppUpdate.parseRelease(release);
+        check("2.3".equals(parsed.version), "update parses official release tag");
+        check((AppUpdate.RELEASES_URL + "/tag/v2.3").equals(parsed.pageUrl),
+                "update links to the matching tagged release");
+
+        assets = new org.json.JSONArray();
+        org.json.JSONObject draftApk = new org.json.JSONObject(apk.toString());
+        draftApk.put("name", "shiyin-99.0.apk");
+        assets.put(draftApk);
+        release.put("draft", true);
+        release.put("assets", assets);
+        boolean draftRejected = false;
+        try { AppUpdate.parseRelease(release); }
+        catch (java.io.IOException expected) { draftRejected = true; }
+        check(draftRejected, "update ignores draft releases");
+
+        release.put("draft", false);
+        assets = new org.json.JSONArray();
+        release.put("assets", assets);
+        boolean incompleteRejected = false;
+        try { AppUpdate.parseRelease(release); }
+        catch (java.io.IOException expected) { incompleteRejected = true; }
+        check(incompleteRejected, "update waits for the matching APK asset");
+
+        String releaseHtml = "<a href='https://github.com/luopos/shiyin/releases/tag/v2.3'>Release</a>"
+                + "<a href='https://github.com/luopos/shiyin/releases/download/v2.3/shiyin-2.3.apk'>APK</a>";
+        AppUpdate.Release pageRelease = AppUpdate.parseReleasePage("v2.3", releaseHtml);
+        check("2.3".equals(pageRelease.version), "update parses GitHub release page fallback");
+        boolean releaseWithoutAssetRejected = false;
+        try {
+            AppUpdate.parseReleasePage("v9.9", "<a href='https://github.com/luopos/shiyin/releases/tag/v9.9'>"
+                    + "Release</a>");
+        } catch (java.io.IOException expected) { releaseWithoutAssetRejected = true; }
+        check(releaseWithoutAssetRejected, "update page fallback requires matching APK asset");
+        boolean untrustedReleaseUrlRejected = false;
+        try {
+            AppUpdate.parseReleasePage("v9.9", "<a href='https://evil.example/luopos/shiyin/releases/tag/v9.9'>"
+                    + "Release</a><a href='https://evil.example/luopos/shiyin/releases/download/v9.9/shiyin-9.9.apk'>"
+                    + "APK</a>");
+        } catch (java.io.IOException expected) { untrustedReleaseUrlRejected = true; }
+        check(untrustedReleaseUrlRejected, "update page fallback rejects untrusted host");
+
+        Activity mainActivity = startActivitySync(new Intent(getTargetContext(),
+                com.shiyin.app.MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP));
+        try {
+            main(() -> {
+                try {
+                    Field tabsField = com.shiyin.app.MainActivity.class.getDeclaredField("tabs");
+                    tabsField.setAccessible(true);
+                    TextView[] tabs = (TextView[]) tabsField.get(mainActivity);
+                    ((View) tabs[3].getParent()).performClick();
+                } catch (Exception e) {
+                    throw new AssertionError(e);
+                }
+            });
+            main(() -> {
+                android.widget.ScrollView scroll = findView(
+                        mainActivity.getWindow().getDecorView(), android.widget.ScrollView.class, null);
+                if (scroll != null) scroll.fullScroll(View.FOCUS_DOWN);
+            });
+            SystemClock.sleep(150);
+            check(onMain(() -> findView(mainActivity.getWindow().getDecorView(),
+                    TextView.class, "检查更新") != null), "about page exposes manual update check");
+            check(onMain(() -> findView(mainActivity.getWindow().getDecorView(),
+                    TextView.class, "GitHub 项目") != null), "about page exposes GitHub project link");
+        } finally {
+            main(() -> mainActivity.finish());
+        }
+    }
+
     private void directoryTest(Map<String, Source> registry) throws Exception {
         final java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
         final java.util.concurrent.CountDownLatch requested = new java.util.concurrent.CountDownLatch(1);
@@ -487,6 +580,26 @@ public final class PlaybackTest extends Instrumentation {
     }
     @Override public void onStart() {
         Bundle outcome = new Bundle();
+        try {
+            updateLogicTest();
+        } catch (Throwable failure) {
+            outcome.putString("stream", "FAIL update checks: " + failure);
+            finish(0, outcome);
+            return;
+        }
+        if (launchArguments != null && "1".equals(launchArguments.getString("update_live"))) {
+            try {
+                AppUpdate.Release latest = AppUpdate.latest();
+                check(latest.version.length() > 0 && latest.pageUrl.startsWith(AppUpdate.RELEASES_URL),
+                        "live GitHub latest release and asset discovered");
+                outcome.putString("stream", results.toString() + "LATEST " + latest.version);
+                finish(-1, outcome);
+            } catch (Throwable failure) {
+                outcome.putString("stream", results.toString() + "FAIL live GitHub update " + failure);
+                finish(0, outcome);
+            }
+            return;
+        }
         if (launchArguments != null && "1".equals(launchArguments.getString("live"))) {
             try {
                 livePagingTest();

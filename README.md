@@ -89,7 +89,8 @@ native/
 - 推送到 `main`：自动构建、校验签名并上传 APK 到对应 Actions 运行的 Artifacts（保留 30 天）。
 - 手动运行：进入 **Actions → Android APK → Run workflow**。
 - 推送 `v` 开头的版本标签：构建成功后自动创建或更新 GitHub Release，上传 APK 与校验文件。
-- 标签须与 `AndroidManifest.xml` 的 `versionName` 一致，例如 `v2.2` 对应 `2.2`；新版本还应递增 `versionCode`。
+- App 的「我的 → 关于 → 检查更新」会查询最新正式发布；发现新版本后可直接打开对应 Release 页面下载。
+- 标签须与 `AndroidManifest.xml` 的 `versionName` 一致，例如 `v2.3` 对应 `2.3`；新版本还应递增 `versionCode`。
 
 云端使用 JDK 17、Android SDK Platform 33 与 Build Tools 34.0.0，直接运行原有构建脚本。
 会编译独立测试 APK，但不会在云端启动模拟器执行回归测试。
