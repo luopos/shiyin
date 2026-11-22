@@ -331,8 +331,10 @@ public final class KidMode {
         // 9245 少儿名著、59 儿歌童谣、64 少儿科普、65 家教育儿、9029 卡通动画。
         leaves.put("lrts", set("63", "3027", "9031", "9245", "59", "64", "65", "9029"));
 
-        // tingyou 是 children 级白名单：父分类 cat:category=2 不留，直接提升这两个子类。
-        leaves.put("tingyou", set("cat:type=43", "cat:type=20"));
+        // tingyou 是 children 级白名单：父分类 cat:category=2 不留，直接提升子类。
+        // 只放童话寓言(20)：「亲子教育」(43) 实测混着「松弛感养育」这类家长向内容，
+        // 给孩子的模式里不该出现，已剔除。
+        leaves.put("tingyou", set("cat:type=20"));
 
         // 没有登记的源（kuwo 等）青少年模式下分类为空、书目不可见。
         ALLOWED_ROOTS = Collections.unmodifiableMap(roots);

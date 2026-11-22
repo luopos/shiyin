@@ -268,10 +268,11 @@ public final class KidModeTest extends Instrumentation {
 
         List<Cat> tingyou = tingyouTree();
         List<Cat> tingyouFiltered = KidMode.filterCategories("tingyou", tingyou);
-        equal(2, tingyouFiltered.size(), "tingyou 提升两个白名单子类为根");
-        equal("[cat:type=43, cat:type=20]", ids(tingyouFiltered).toString(),
-                "tingyou 只留亲子教育与童话寓言");
-        equal("亲子教育", tingyouFiltered.get(0).name, "tingyou 提升后保留分类名称");
+        equal(1, tingyouFiltered.size(), "tingyou 只提升童话寓言一个子类为根");
+        equal("[cat:type=20]", ids(tingyouFiltered).toString(),
+                "tingyou 只留童话寓言（亲子教育含家长向内容已剔除）");
+        equal("童话寓言", tingyouFiltered.get(0).name, "tingyou 提升后保留分类名称");
+        check(find(tingyouFiltered, "cat:type=43") == null, "tingyou 亲子教育已剔除");
         check(tingyouFiltered.get(0).children.isEmpty(), "tingyou 提升后清空 children");
         check(find(tingyouFiltered, "cat:category=2") == null, "tingyou 父分类不留");
         check(find(tingyouFiltered, "cat:type=99") == null, "tingyou 非白名单子类被丢弃");

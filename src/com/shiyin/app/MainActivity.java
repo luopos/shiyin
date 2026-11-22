@@ -208,22 +208,23 @@ public class MainActivity extends Activity implements Player.Listener, KidMode.L
         gap.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1f));
         bar.addView(gap);
 
+        // 搜索入口只留一个圆形图标，点开再输关键词：原来那行长文案占掉半个标题栏。
         searchBox = new LinearLayout(this);
         searchBox.setOrientation(LinearLayout.HORIZONTAL);
-        searchBox.setGravity(Gravity.CENTER_VERTICAL);
-        searchBox.setPadding(Ui.dp(this, 12), Ui.dp(this, 7),
-                Ui.dp(this, 12), Ui.dp(this, 7));
+        searchBox.setGravity(Gravity.CENTER);
         searchBox.setBackground(Ui.round(Ui.BG2, 18, this));
+        searchBox.setContentDescription("搜索");
+        searchBox.setLayoutParams(new LinearLayout.LayoutParams(
+                Ui.dp(this, 38), Ui.dp(this, 38)));
         searchBox.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 startActivity(new Intent(MainActivity.this, com.shiyin.app.ui.SearchActivity.class));
             }
         });
-        TextView icon = Ui.text(this, "🔍", 12f, Ui.DIM);
+        TextView icon = Ui.text(this, "🔍", 15f, Ui.DIM);
+        icon.setGravity(Gravity.CENTER);
         searchBox.addView(icon);
-        TextView hint = Ui.text(this, "  搜索书名 / 作者 / RSS", 12.5f, Ui.DIM2);
-        searchBox.addView(hint);
         bar.addView(searchBox);
         return bar;
     }
