@@ -2,8 +2,8 @@
 <!-- 拾音 TV：横屏电视 / 车机版，独立包名，可与手机版 com.shiyin.app 共存。 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.shiyin.tv"
-    android:versionCode="1"
-    android:versionName="1.0">
+    android:versionCode="2"
+    android:versionName="1.1">
 
     <uses-sdk android:minSdkVersion="16" android:targetSdkVersion="33" />
 
