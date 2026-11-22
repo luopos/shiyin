@@ -100,6 +100,46 @@ public final class KidModeTest extends Instrumentation {
         return out;
     }
 
+    /** 假源：模拟「非儿童分类里也有同关键词的书」，验证青少年搜索不会漏出去。 */
+    private static final class FakeSource extends com.shiyin.app.source.Source {
+        final java.util.Map<String, java.util.List<Book>> byCat = new java.util.HashMap<>();
+
+        @Override
+        public String id() {
+            return "lrts";
+        }
+
+        @Override
+        public String name() {
+            return "假源";
+        }
+
+        @Override
+        public com.shiyin.app.source.Source.Page page(Cat cat, int pn) {
+            com.shiyin.app.source.Source.Page page = new com.shiyin.app.source.Source.Page();
+            page.page = pn;
+            page.totalPage = 1;
+            java.util.List<Book> books = byCat.get(cat.id);
+            page.books = books == null ? new ArrayList<Book>() : new ArrayList<Book>(books);
+            return page;
+        }
+
+        @Override
+        public String audio(com.shiyin.app.model.Chapter chapter) {
+            return "";
+        }
+
+        @Override
+        public List<Book> search(String keyword, int page) {
+            // 全站搜索会返回所有分类的书，包括非儿童分类的
+            List<Book> all = new ArrayList<Book>();
+            for (java.util.List<Book> list : byCat.values()) all.addAll(list);
+            List<Book> hit = new ArrayList<Book>();
+            for (Book b : all) if (b.title.contains(keyword)) hit.add(b);
+            return hit;
+        }
+    }
+
     /** 造一本最小可用的 Book，只填过滤逻辑会读的字段。 */
     private static Book book(String source, String title) {
         Book b = new Book();
@@ -241,6 +281,26 @@ public final class KidModeTest extends Instrumentation {
         equal(2, kept.size(), "搜索结果只留白名单源且标题干净的");
         equal(4, hits.size(), "过滤不修改传入列表");
         equal(0, KidMode.filterSearchResults(null).size(), "null 输入返回空列表");
+
+        // 13c. 关键回归：全站搜索能搜到非儿童分类的书，分类内搜索必须搜不到
+        FakeSource fake = new FakeSource();
+        List<Book> kidCat = new ArrayList<Book>();
+        kidCat.add(book("lrts", "宝宝睡前故事"));
+        List<Book> adultCat = new ArrayList<Book>();
+        adultCat.add(book("lrts", "都市重生故事"));
+        fake.byCat.put("63", kidCat);          // 白名单：益智故事
+        fake.byCat.put("1001", adultCat);      // 非白名单分类
+
+        List<Book> wholeSite = fake.search("故事", 1);
+        equal(2, wholeSite.size(), "全站搜索确实会返回非儿童分类的书（漏洞前提）");
+
+        List<Book> scoped = com.shiyin.app.kid.KidSearch.searchSource(fake, "故事");
+        equal(1, scoped.size(), "青少年模式只在白名单分类里搜");
+        equal("宝宝睡前故事", scoped.get(0).title, "搜到的是儿童分类那本");
+        check(com.shiyin.app.kid.KidSearch.matches(book("lrts", "ABC故事"), "abc"),
+                "关键词匹配大小写不敏感");
+        equal(0, com.shiyin.app.kid.KidSearch.searchSource(fake, "   ").size(),
+                "空关键词不搜");
 
         // 10/11/12 分类过滤
         List<Cat> lrts = lrtsTree();

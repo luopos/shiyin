@@ -14,6 +14,7 @@ import android.widget.ListView;
 import android.widget.TextView;
 
 import com.shiyin.app.kid.KidMode;
+import com.shiyin.app.kid.KidSearch;
 import com.shiyin.app.model.Book;
 import com.shiyin.app.source.Source;
 import com.shiyin.app.source.Sources;
@@ -47,7 +48,12 @@ public class SearchActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        pool.addAll(Sources.searchable());
+        // 青少年模式只列有白名单分类的源：没有儿童分类的源搜了也是空，列出来只会误导。
+        for (Source source : Sources.searchable()) {
+            if (!KidMode.enabled() || !KidMode.allowedLeafIds(source.id()).isEmpty()) {
+                pool.add(source);
+            }
+        }
         setContentView(build());
         showHistory();
 
@@ -237,7 +243,15 @@ public class SearchActivity extends Activity {
             return;
         }
 
-        status.setText("正在搜 " + kw + " …");
+        final boolean kid = KidMode.enabled();
+        if (kid && targets.isEmpty()) {
+            status.setText("青少年模式下暂无可搜索的儿童分类");
+            return;
+        }
+
+        status.setText(kid
+                ? "正在儿童分类里搜 " + kw + " …"
+                : "正在搜 " + kw + " …");
         adapter.set(null);
 
         final List<Book> merged = Collections.synchronizedList(new ArrayList<Book>());
@@ -248,7 +262,9 @@ public class SearchActivity extends Activity {
             Bg.run(new Callable<List<Book>>() {
                 @Override
                 public List<Book> call() throws Exception {
-                    return s.search(kw, 1);
+                    // 青少年模式只翻白名单分类做本地匹配：
+                    // 全站搜索拿不到分类信息，拦不住跨分类内容。
+                    return kid ? KidSearch.searchSource(s, kw) : s.search(kw, 1);
                 }
             }, new Bg.Cb<List<Book>>() {
                 @Override
@@ -278,7 +294,7 @@ public class SearchActivity extends Activity {
                     + " 个源，已 " + view.size() + " 本");
         } else if (view.isEmpty()) {
             status.setText(kid
-                    ? "「" + kw + "」没有适合儿童的内容。青少年模式下只显示儿童内容，可换个关键词"
+                    ? "「" + kw + "」在儿童分类里没有找到。青少年模式只搜儿童内容"
                     : "「" + kw + "」没搜到。换个关键词，或者切到别的源试试");
         } else {
             status.setText("「" + kw + "」共 " + view.size() + " 本（" + total + " 个源）"

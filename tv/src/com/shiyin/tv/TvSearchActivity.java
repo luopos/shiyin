@@ -16,6 +16,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.shiyin.app.kid.KidMode;
+import com.shiyin.app.kid.KidSearch;
 import com.shiyin.app.model.Book;
 import com.shiyin.app.source.Source;
 import com.shiyin.app.source.Sources;
@@ -345,7 +346,12 @@ public class TvSearchActivity extends Activity {
         if (searching) return;
         searching = true;
 
-        List<Source> pool = Sources.searchable();
+        boolean kid = KidMode.enabled();
+        List<Source> pool = new ArrayList<Source>();
+        for (Source s : Sources.searchable()) {
+            // 青少年模式只保留有儿童分类的源
+            if (!kid || !KidMode.allowedLeafIds(s.id()).isEmpty()) pool.add(s);
+        }
         if (pool.isEmpty()) {
             searching = false;
             statusView.setText("当前没有可搜索的内容源，先到「我的」添加订阅");
@@ -367,7 +373,9 @@ public class TvSearchActivity extends Activity {
             Bg.run(new Callable<List<Book>>() {
                 @Override
                 public List<Book> call() throws Exception {
-                    return source.search(kw, 1);
+                    // 青少年模式只翻白名单分类做本地匹配，杜绝跨分类内容
+                    return KidMode.enabled() ? KidSearch.searchSource(source, kw)
+                            : source.search(kw, 1);
                 }
             }, new Bg.Cb<List<Book>>() {
                 @Override
@@ -403,7 +411,7 @@ public class TvSearchActivity extends Activity {
         resultsBody.removeAllViews();
         if (view.isEmpty()) {
             statusView.setText(kid
-                    ? "「" + kw + "」没有适合儿童的内容。青少年模式下只显示儿童内容"
+                    ? "「" + kw + "」在儿童分类里没有找到。青少年模式只搜儿童内容"
                     : "「" + kw + "」没有结果，换个关键词试试");
             statusView.setTextColor(kid ? Ui.TEAL : Ui.DIM2);
             resultsBody.addView(TvWidgets.empty(this, kid

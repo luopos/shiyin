@@ -462,6 +462,20 @@ public final class KidMode {
         return new String(chars);
     }
 
+    /**
+     * 该源在青少年模式下允许浏览/搜索的叶子分类 id。
+     *
+     * <p>搜索没有服务端分类过滤（实测 cid 参数无效），所以青少年模式下的搜索
+     * 只能限定在这些分类里翻页做本地匹配，见 {@link KidSearch}。
+     * 未登记的源返回空列表 —— 默认拒绝。
+     */
+    public static List<String> allowedLeafIds(String sourceId) {
+        if (sourceId == null) return new ArrayList<String>();
+        Set<String> ids = ALLOWED_LEAVES.get(sourceId);
+        if (ids == null || ids.isEmpty()) return new ArrayList<String>();
+        return new ArrayList<String>(ids);
+    }
+
     /* ---------------- UI 开关 ---------------- */
 
     /**
