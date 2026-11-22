@@ -13,6 +13,7 @@ import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.TextView;
 
+import com.shiyin.app.kid.KidMode;
 import com.shiyin.app.model.Book;
 import com.shiyin.app.source.Source;
 import com.shiyin.app.source.Sources;
@@ -269,15 +270,19 @@ public class SearchActivity extends Activity {
     }
 
     private void flush(String kw, List<Book> merged, int done, int total) {
-        List<Book> view = new ArrayList<>(merged);
+        List<Book> view = KidMode.filterSearchResults(new ArrayList<>(merged));
         adapter.set(view);
+        boolean kid = KidMode.enabled();
         if (done < total) {
             status.setText("正在搜「" + kw + "」… " + done + "/" + total
                     + " 个源，已 " + view.size() + " 本");
         } else if (view.isEmpty()) {
-            status.setText("「" + kw + "」没搜到。换个关键词，或者切到别的源试试");
+            status.setText(kid
+                    ? "「" + kw + "」没有适合儿童的内容。青少年模式下只显示儿童内容，可换个关键词"
+                    : "「" + kw + "」没搜到。换个关键词，或者切到别的源试试");
         } else {
-            status.setText("「" + kw + "」共 " + view.size() + " 本（" + total + " 个源）");
+            status.setText("「" + kw + "」共 " + view.size() + " 本（" + total + " 个源）"
+                    + (kid ? " · 仅儿童内容" : ""));
         }
     }
 

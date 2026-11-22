@@ -63,7 +63,7 @@ public class MainActivity extends Activity implements Player.Listener, KidMode.L
 
     /** 首页顶部的青少年模式提示条，开关状态变化时重建。 */
     private LinearLayout kidBanner;
-    /** 顶部搜索入口，青少年模式下隐藏。 */
+    /** 顶部搜索入口；青少年模式下同样显示，靠搜索结果过滤保证安全。 */
     private LinearLayout searchBox;
     /** 上次渲染时的青少年模式状态，用来判断是否需要整体重建首页。 */
     private boolean renderedKidMode;
@@ -139,11 +139,13 @@ public class MainActivity extends Activity implements Player.Listener, KidMode.L
         selectTab(tab);
     }
 
-    /** 顶部搜索入口与提示条的显隐，不重建页面就能生效。 */
+    /**
+     * 顶部提示条的显隐，不重建页面就能生效。
+     *
+     * <p>搜索入口在青少年模式下照样显示：搜索是找内容的主要方式，
+     * 关掉会让模式难用；安全性由搜索结果逐本过滤保证。
+     */
     private void applyKidChrome() {
-        if (searchBox != null) {
-            searchBox.setVisibility(KidMode.allowsSearch() ? View.VISIBLE : View.GONE);
-        }
         if (kidBanner != null) {
             kidBanner.setVisibility(KidMode.enabled() ? View.VISIBLE : View.GONE);
         }
@@ -212,14 +214,9 @@ public class MainActivity extends Activity implements Player.Listener, KidMode.L
         searchBox.setPadding(Ui.dp(this, 12), Ui.dp(this, 7),
                 Ui.dp(this, 12), Ui.dp(this, 7));
         searchBox.setBackground(Ui.round(Ui.BG2, 18, this));
-        searchBox.setVisibility(KidMode.allowsSearch() ? View.VISIBLE : View.GONE);
         searchBox.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (!KidMode.allowsSearch()) {
-                    Ui.toast(MainActivity.this, "青少年模式下不提供搜索");
-                    return;
-                }
                 startActivity(new Intent(MainActivity.this, com.shiyin.app.ui.SearchActivity.class));
             }
         });
@@ -1058,8 +1055,8 @@ public class MainActivity extends Activity implements Player.Listener, KidMode.L
     private void showKidPanel() {
         String state = KidMode.enabled() ? "已开启" : "未开启";
         String detail = KidMode.enabled()
-                ? "首页、分类、书架只显示儿童内容，搜索已关闭。"
-                : "开启后只显示儿童内容，并关闭搜索。";
+                ? "首页、分类、书架和搜索都只显示儿童内容。"
+                : "开启后只显示儿童内容，搜索也只会搜到儿童内容。";
         String message = "当前状态：" + state + "\n" + detail;
 
         if (!KidMode.hasPassword()) {
@@ -1164,7 +1161,7 @@ public class MainActivity extends Activity implements Player.Listener, KidMode.L
     private void askEnableNow(final String password) {
         new AlertDialog.Builder(this)
                 .setTitle("现在开启青少年模式？")
-                .setMessage("开启后只显示儿童内容，搜索会关闭。")
+                .setMessage("开启后只显示儿童内容，搜索也只会搜到儿童内容。")
                 .setNegativeButton("以后再说", (d, w) -> showMine())
                 .setPositiveButton("立即开启", (d, w) -> {
                     if (KidMode.enableWith(password)) {

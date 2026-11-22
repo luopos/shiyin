@@ -180,8 +180,35 @@ public class TvMainActivity extends Activity {
             LinearLayout row = TvWidgets.hbox(this);
             row.setGravity(Gravity.CENTER_VERTICAL);
             TextView brand = TvWidgets.bold(this, "拾音", 20f, Ui.AMBER);
-            brand.setPadding(0, 0, Ui.dp(this, 10), 0);
+            brand.setPadding(0, 0, Ui.dp(this, 6), 0);
             row.addView(brand);
+
+            // 搜索入口：触摸和遥控都能到达
+            TextView searchBtn = TvWidgets.text(this, "🔍", 18f, Ui.DIM);
+            searchBtn.setGravity(Gravity.CENTER);
+            searchBtn.setMinWidth(Ui.dp(this, 48));
+            searchBtn.setMinHeight(Ui.dp(this, 48));
+            searchBtn.setFocusable(true);
+            searchBtn.setClickable(true);
+            searchBtn.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    TvSearchActivity.start(TvMainActivity.this);
+                }
+            });
+            searchBtn.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+                @Override
+                public void onFocusChange(View v, boolean hasFocus) {
+                    v.setBackground(hasFocus ? Ui.round(Ui.AMBER, 10, TvMainActivity.this)
+                            : Ui.round(0x00000000, 10, TvMainActivity.this));
+                    ((TextView) v).setTextColor(hasFocus ? 0xFF0B0E14 : Ui.DIM);
+                }
+            });
+            LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                    Ui.dp(this, 48), Ui.dp(this, 48));
+            slp.rightMargin = Ui.dp(this, 6);
+            searchBtn.setLayoutParams(slp);
+            row.addView(searchBtn);
             navRail.addView(row);
 
             for (int i = 0; i < 4; i++) {
@@ -241,6 +268,41 @@ public class TvMainActivity extends Activity {
         TextView mode = TvWidgets.text(this, "  电视 · 车机 · 平板", 14f, Ui.DIM2);
         sub.addView(mode);
         navRail.addView(sub);
+
+        // 搜索入口：放在导航栏最上方，遥控按几下就到
+        LinearLayout searchRow = new LinearLayout(this);
+        searchRow.setOrientation(LinearLayout.HORIZONTAL);
+        searchRow.setGravity(Gravity.CENTER_VERTICAL);
+        searchRow.setMinimumHeight(Ui.dp(this, 52));
+        searchRow.setPadding(Ui.dp(this, 12), Ui.dp(this, 8), Ui.dp(this, 12), Ui.dp(this, 8));
+        LinearLayout.LayoutParams srlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        srlp.topMargin = Ui.dp(this, 10);
+        searchRow.setLayoutParams(srlp);
+        searchRow.setFocusable(true);
+        searchRow.setClickable(true);
+        searchRow.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                TvSearchActivity.start(TvMainActivity.this);
+            }
+        });
+        searchRow.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View v, boolean hasFocus) {
+                v.setBackground(hasFocus ? Ui.round(Ui.AMBER, 10, TvMainActivity.this)
+                        : Ui.roundStroke(Ui.BG3, 0xFF2A3242, 10, 1, TvMainActivity.this));
+                ((TextView) ((LinearLayout) v).getChildAt(1))
+                        .setTextColor(hasFocus ? 0xFF0B0E14 : Ui.DIM);
+            }
+        });
+        searchRow.setBackground(Ui.roundStroke(Ui.BG3, 0xFF2A3242, 10, 1, this));
+        TextView sIcon = TvWidgets.text(this, "🔍", 16f, Ui.DIM);
+        sIcon.setPadding(0, 0, Ui.dp(this, 8), 0);
+        searchRow.addView(sIcon);
+        TextView sLabel = TvWidgets.text(this, "搜索", 16f, Ui.DIM);
+        searchRow.addView(sLabel);
+        navRail.addView(searchRow);
 
         navRail.addView(TvWidgets.spacer(this, 14));
 

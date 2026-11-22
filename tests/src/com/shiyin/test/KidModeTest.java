@@ -100,6 +100,15 @@ public final class KidModeTest extends Instrumentation {
         return out;
     }
 
+    /** 造一本最小可用的 Book，只填过滤逻辑会读的字段。 */
+    private static Book book(String source, String title) {
+        Book b = new Book();
+        b.source = source;
+        b.title = title;
+        b.id = title;
+        return b;
+    }
+
     private static List<String> ids(List<Cat> cats) {
         List<String> out = new ArrayList<String>();
         for (int i = 0; i < cats.size(); i++) out.add(cats.get(i).id);
@@ -218,9 +227,20 @@ public final class KidModeTest extends Instrumentation {
         check(KidMode.enabled(), "开启后 enabled 为 true");
         check(events == 1 && lastEvent, "开启时监听收到 true");
 
-        // 13. 开启后搜索与通用首页关闭
-        check(!KidMode.allowsSearch(), "青少年模式下不允许搜索");
+        // 13. 开启后：搜索保持可用（靠结果过滤保证安全），通用首页关闭
+        check(KidMode.allowsSearch(), "青少年模式下仍允许搜索");
         check(!KidMode.allowsGenericHome(), "青少年模式下不允许通用首页");
+
+        // 13b. 搜索结果过滤：非儿童源与不适宜标题都要被剔除
+        List<Book> hits = new ArrayList<Book>();
+        hits.add(book("lrts", "米小圈上学记"));
+        hits.add(book("kuwo", "热闹的都市"));
+        hits.add(book("lrts", "都市言情：秘密"));
+        hits.add(book("lrts", "幼小必背古诗140首"));
+        List<Book> kept = KidMode.filterSearchResults(hits);
+        equal(2, kept.size(), "搜索结果只留白名单源且标题干净的");
+        equal(4, hits.size(), "过滤不修改传入列表");
+        equal(0, KidMode.filterSearchResults(null).size(), "null 输入返回空列表");
 
         // 10/11/12 分类过滤
         List<Cat> lrts = lrtsTree();

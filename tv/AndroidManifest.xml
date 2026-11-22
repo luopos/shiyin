@@ -63,6 +63,14 @@
             android:screenOrientation="unspecified"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode|keyboardHidden" />
 
+        <!-- 搜索：内置屏幕键盘，电视无输入法也能用；触摸设备走系统输入法。 -->
+        <activity
+            android:name=".TvSearchActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode|keyboardHidden"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- 共享播放服务；PlayerService 与手机版同一份源码。 -->
         <service
             android:name="com.shiyin.app.play.PlayerService"

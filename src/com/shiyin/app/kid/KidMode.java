@@ -462,9 +462,32 @@ public final class KidMode {
 
     /* ---------------- UI 开关 ---------------- */
 
-    /** 搜索是否允许（青少年模式下一律 false，UI 直接隐藏搜索入口）。 */
+    /**
+     * 搜索是否允许。青少年模式下也允许 —— 搜索是找内容的主要途径，
+     * 关掉会让模式很难用。安全性由结果侧保证：搜索结果必须逐本过
+     * {@link #allowsBook(Book)}，非白名单内容不会出现。
+     */
     public static boolean allowsSearch() {
-        return !enabled();
+        return true;
+    }
+
+    /**
+     * 过滤搜索结果：青少年模式下逐本校验，普通模式原样返回。
+     *
+     * <p>搜索是少数不知道「这本书属于哪个分类」的入口，所以这里只能靠
+     * {@link #allowsBook(Book)} 的源白名单 + 标题黑名单兜底。
+     * 返回新列表，不修改传入的列表。
+     */
+    public static List<Book> filterSearchResults(List<Book> books) {
+        if (books == null) return new ArrayList<Book>();
+        if (!enabled()) return books;
+        List<Book> out = new ArrayList<Book>();
+        for (int i = 0; i < books.size(); i++) {
+            Book book = books.get(i);
+            // allowsBook 内部已含源白名单 + 标题黑名单，不必重复判断。
+            if (allowsBook(book)) out.add(book);
+        }
+        return out;
     }
 
     /** 首页是否允许展示通用推荐（青少年模式下 false，UI 改用儿童分类书目）。 */
