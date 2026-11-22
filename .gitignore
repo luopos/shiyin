@@ -38,3 +38,8 @@ desktop.ini
 *.log
 *.tmp
 *.bak
+
+# 调试产物（uiautomator dump 等）
+/tv-*.xml
+/ph-*.xml
+/ui-*.xml
