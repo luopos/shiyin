@@ -3,6 +3,7 @@ package com.shiyin.app.store;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import com.shiyin.app.compat.Utf8;
 import com.shiyin.app.model.Book;
 import com.shiyin.app.model.Cat;
 import com.shiyin.app.model.Chapter;
@@ -171,8 +172,7 @@ public final class Prefs {
     }
 
     private static String homeKey(String source) {
-        return android.util.Base64.encodeToString(source.getBytes(
-                java.nio.charset.StandardCharsets.UTF_8), android.util.Base64.NO_WRAP);
+        return android.util.Base64.encodeToString(Utf8.bytes(source), android.util.Base64.NO_WRAP);
     }
 
     /** 与源配置绑定；过期仍可展示，只有成功的新结果才覆盖旧推荐。 */
@@ -487,7 +487,8 @@ public final class Prefs {
                 Prog pb = progress(b.source, b.id);
                 long ta = pa == null ? 0 : pa.updated;
                 long tb = pb == null ? 0 : pb.updated;
-                return Long.compare(tb, ta);
+                // Long.compare 是 API19 才有的，4.1 上会 NoSuchMethodError。
+                return tb < ta ? 1 : (tb == ta ? 0 : -1);
             }
         });
         return withTime;
@@ -634,7 +635,14 @@ public final class Prefs {
                         editor.remove(entry.getKey());
                     }
                 }
-                Collections.sort(stamps, (a, b) -> Long.compare(b.savedAt, a.savedAt));
+                // 按写入时间倒序淘汰；Long.compare 是 API19，这里手写比较。
+                Collections.sort(stamps, new java.util.Comparator<PageStamp>() {
+                    @Override public int compare(PageStamp a, PageStamp b) {
+                        long left = b.savedAt;
+                        long right = a.savedAt;
+                        return left < right ? 1 : (left == right ? 0 : -1);
+                    }
+                });
                 int bookPages = 1;
                 int totalPages = 1;
                 for (PageStamp stamp : stamps) {

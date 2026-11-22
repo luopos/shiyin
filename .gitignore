@@ -1,6 +1,8 @@
 # 构建产物
 build/
 tests/build/
+tv/build/
+tv/build-*/
 *.apk
 *.aab
 *.dex

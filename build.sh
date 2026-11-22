@@ -51,7 +51,7 @@ ASSETS_ARG=()
 echo "== 3/7 编译 Java =="
 find src "$OUT/gen" -name "*.java" | LC_ALL=C sort > "$OUT/sources.txt"
 "$JAVAC" -J-Duser.language=en -J-Duser.country=US -encoding UTF-8 \
-    -source 11 -target 11 -nowarn -classpath "$CP" \
+    -source 8 -target 8 -nowarn -Xlint:-options -classpath "$CP" \
     -d "$OUT/classes" @"$OUT/sources.txt"
 
 echo "== 4/7 生成 DEX =="

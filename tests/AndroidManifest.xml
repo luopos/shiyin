@@ -4,4 +4,6 @@
     <application android:label="Playback Regression" />
     <instrumentation android:name="com.shiyin.test.PlaybackTest"
         android:targetPackage="com.shiyin.app" android:functionalTest="true" />
+    <instrumentation android:name="com.shiyin.test.KidModeTest"
+        android:targetPackage="com.shiyin.app" android:functionalTest="true" />
 </manifest>

@@ -31,9 +31,11 @@ abspath() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else printf 
 OUT=tests/build
 rm -rf -- "$OUT"
 mkdir -p "$OUT/classes" "$OUT/dex"
+# 每个 runner 一个独立 entry point，全部编进同一个测试 APK；AndroidManifest 里各注册一条。
+find tests/src -name "*.java" | LC_ALL=C sort > "$OUT/sources.txt"
 "$JAVAC" -J-Duser.language=en -J-Duser.country=US -encoding UTF-8 \
-    -source 11 -target 11 -nowarn -classpath "$CP" -d "$OUT/classes" \
-    tests/src/com/shiyin/test/PlaybackTest.java
+    -source 8 -target 8 -nowarn -Xlint:-options -classpath "$CP" -d "$OUT/classes" \
+    @"$OUT/sources.txt"
 "$JAR" cf "$OUT/program.jar" -C "$OUT/classes" .
 "$JAVA" -Xmx1024M -cp "$(abspath "$BT/lib/d8.jar")" com.android.tools.r8.D8 \
     --lib "$(abspath "$PLATFORM/android.jar")" --classpath "$(abspath "$PWD/build/program.jar")" \

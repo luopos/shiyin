@@ -1,5 +1,6 @@
 package com.shiyin.app.source;
 
+import com.shiyin.app.compat.Utf8;
 import com.shiyin.app.model.Book;
 import com.shiyin.app.model.Cat;
 import com.shiyin.app.model.Chapter;
@@ -70,7 +71,7 @@ public final class JsonSource extends Source {
     /** 缓存随源配置变化失效，磁盘只保存摘要。 */
     public String homeCacheVersion() {
         try {
-            byte[] bytes = spec.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            byte[] bytes = Utf8.bytes(spec.toString());
             byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
             return android.util.Base64.encodeToString(digest, android.util.Base64.NO_WRAP);
         } catch (java.security.NoSuchAlgorithmException impossible) {

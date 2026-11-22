@@ -2,6 +2,7 @@ package com.shiyin.app;
 
 import android.app.Application;
 
+import com.shiyin.app.kid.KidMode;
 import com.shiyin.app.source.Subscriptions;
 import com.shiyin.app.store.Prefs;
 import com.shiyin.app.util.Bg;
@@ -23,6 +24,8 @@ public class App extends Application {
 
         Prefs.init(this);
         Prefs.migrateSubscriptionSchema();
+        // 青少年模式存储独立（shiyin_kid 文件），只管开关与密码，不影响书架进度。
+        KidMode.init(this);
         // 订阅清单先用本地缓存注册：断网能用，启动也不用等网络。
         Subscriptions.reload();
         // 缓存超过有效期的才在后台静默刷新一次，失败就算了，不打扰用户。

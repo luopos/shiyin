@@ -23,7 +23,8 @@ import java.util.concurrent.Executors;
 public final class ImgView extends ImageView {
     private static final LruCache<String, Bitmap> CACHE = new LruCache<String, Bitmap>(8 * 1024 * 1024) {
         @Override protected int sizeOf(String key, Bitmap bitmap) {
-            return bitmap.getAllocationByteCount();
+            // getAllocationByteCount 是 API19，Android 4.1 只有 getByteCount（API12）。
+            return bitmap.getByteCount();
         }
     };
     private static final ExecutorService POOL = Executors.newFixedThreadPool(4);

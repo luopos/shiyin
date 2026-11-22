@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TV 回归测试：独立 instrumentation APK，包名 com.shiyin.tv.test，只装测试设备。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.shiyin.tv.test"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <uses-sdk android:minSdkVersion="16" android:targetSdkVersion="33" />
+
+    <application android:label="拾音TV回归测试" />
+
+    <instrumentation
+        android:name="com.shiyin.tv.test.TvRegressionTest"
+        android:targetPackage="com.shiyin.tv"
+        android:functionalTest="true" />
+</manifest>

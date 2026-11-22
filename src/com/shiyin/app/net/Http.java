@@ -9,6 +9,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.zip.GZIPInputStream;
 
+import com.shiyin.app.compat.Tls12;
+
 /**
  * 极简 HTTP 客户端。
  *
@@ -30,6 +32,12 @@ public final class Http {
                     + "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
     public static final int TIMEOUT = 15000;
+
+    static {
+        // Android 4.1–4.4 默认不启用 TLS 1.2，而源站基本只认 TLS 1.2+。
+        // 第一次用到 Http 时补一次默认 SSLSocketFactory；API21+ 是空操作。
+        Tls12.enable();
+    }
 
     private Http() {
     }

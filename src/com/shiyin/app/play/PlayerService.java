@@ -1,7 +1,6 @@
 package com.shiyin.app.play;
 
 import android.app.Notification;
-import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
@@ -11,22 +10,28 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Bitmap;
 import android.media.AudioManager;
-import android.os.Handler;
-import android.os.Looper;
-import com.shiyin.app.util.ImgView;
-import com.shiyin.app.util.Ui;
-import android.media.MediaMetadata;
-import android.media.session.MediaSession;
-import android.media.session.PlaybackState;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.SystemClock;
 
+import com.shiyin.app.compat.NotiCompat;
+import com.shiyin.app.compat.PendingIntents;
+import com.shiyin.app.compat.SessionBridge;
 import com.shiyin.app.model.Book;
 import com.shiyin.app.model.Chapter;
-import com.shiyin.app.ui.PlayerActivity;
+import com.shiyin.app.util.ImgView;
+import com.shiyin.app.util.Ui;
 
-/** 播放服务持有系统媒体会话，负责后台通知、锁屏控制和生命周期清理。 */
+/**
+ * 播放服务持有系统媒体会话，负责后台通知、锁屏控制和生命周期清理。
+ *
+ * <p>共享代码要能在 Android 4.1（API16）上编译：媒体会话、通知渠道、PendingIntent
+ * 新标志位全部走 {@code com.shiyin.app.compat}，这里不出现任何 API21+ 的类型。
+ * 播放页也不再硬编码 {@code com.shiyin.app.ui.PlayerActivity}——TV 包没有 ui 包，
+ * 改成「注入优先、反射兜底、最后退回启动 Intent」。
+ */
 public class PlayerService extends Service implements Player.Listener {
     public static final String ACTION_TOGGLE = "com.shiyin.app.TOGGLE";
     public static final String ACTION_PREV = "com.shiyin.app.PREV";
@@ -35,8 +40,16 @@ public class PlayerService extends Service implements Player.Listener {
 
     private static final String CHANNEL = "playback";
     private static final int NOTI_ID = 0x5EED;
+    /** 手机包的播放页；TV 包没有这个类，反射失败后走启动 Intent。 */
+    private static final String OPEN_ACTIVITY = "com.shiyin.app.ui.PlayerActivity";
+    /** Context.RECEIVER_NOT_EXPORTED，API33 常量。 */
+    private static final int RECEIVER_NOT_EXPORTED = 0x4;
+
     private static PlayerService instance;
-    private MediaSession session;
+    private static Class<?> openActivity;
+    private static boolean openActivityResolved;
+
+    private SessionBridge session;
     private long lastPositionUpdate;
     private long lastNotificationUpdate;
     private String coverUrl = "";
@@ -53,11 +66,44 @@ public class PlayerService extends Service implements Player.Listener {
         }
     };
 
+    /**
+     * 注入「点通知打开哪个页面」。
+     *
+     * <p>TV 包在 Application 里调用一次即可；不调用时按约定反射找手机包的 PlayerActivity。
+     */
+    public static void setOpenActivity(Class<?> activity) {
+        openActivity = activity;
+        openActivityResolved = true;
+    }
+
+    private static Class<?> resolveOpenActivity() {
+        if (!openActivityResolved) {
+            openActivityResolved = true;
+            try {
+                openActivity = Class.forName(OPEN_ACTIVITY);
+            } catch (Throwable missing) {
+                // TV 包没有 ui 包，属于正常情况。
+                openActivity = null;
+            }
+        }
+        return openActivity;
+    }
+
     private PendingIntent contentIntent() {
-        Intent open = new Intent(this, PlayerActivity.class)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        return PendingIntent.getActivity(this, 1, open,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Intent open;
+        Class<?> activity = resolveOpenActivity();
+        if (activity != null) {
+            open = new Intent().setClass(this, activity);
+        } else {
+            open = getPackageManager().getLaunchIntentForPackage(getPackageName());
+            if (open == null) return null;
+        }
+        open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        try {
+            return PendingIntent.getActivity(this, 1, open, PendingIntents.updateCurrent());
+        } catch (Throwable unavailable) {
+            return null;
+        }
     }
 
     private void loadArtwork(Book book) {
@@ -87,8 +133,17 @@ public class PlayerService extends Service implements Player.Listener {
     public static void start(Context context) {
         Context app = context.getApplicationContext();
         Intent intent = new Intent(app, PlayerService.class);
-        if (Build.VERSION.SDK_INT >= 26) app.startForegroundService(intent);
-        else app.startService(intent);
+        if (Build.VERSION.SDK_INT >= 26) {
+            // startForegroundService 是 API26 方法，API16 基准里没有，只能反射。
+            try {
+                Context.class.getMethod("startForegroundService", Intent.class)
+                        .invoke(app, intent);
+                return;
+            } catch (Throwable ignored) {
+                // 落回 startService。
+            }
+        }
+        app.startService(intent);
     }
 
     public static void stop(Context context) {
@@ -102,17 +157,9 @@ public class PlayerService extends Service implements Player.Listener {
     @Override public void onCreate() {
         super.onCreate();
         instance = this;
-        if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel channel = new NotificationChannel(CHANNEL, "播放",
-                    NotificationManager.IMPORTANCE_LOW);
-            channel.setShowBadge(false);
-            channel.setSound(null, null);
-            getSystemService(NotificationManager.class).createNotificationChannel(channel);
-        }
-        session = new MediaSession(this, "ShiyinPlayback");
-        session.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS
-                | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
-        session.setCallback(new MediaSession.Callback() {
+        NotiCompat.createChannel(this, CHANNEL, "播放");
+        session = new SessionBridge(this, "ShiyinPlayback");
+        session.setCallback(new SessionBridge.Callbacks() {
             @Override public void onPlay() { Player.get().resume(PlayerService.this); }
             @Override public void onPause() { Player.get().pause(PlayerService.this); }
             @Override public void onSkipToPrevious() { Player.get().prev(PlayerService.this); }
@@ -121,18 +168,33 @@ public class PlayerService extends Service implements Player.Listener {
                 Player.get().seekTo((int) Math.min(Integer.MAX_VALUE, Math.max(0, position)));
             }
             @Override public void onStop() { Player.get().stop(PlayerService.this); }
-            @Override public void onCustomAction(String action, android.os.Bundle extras) {
+            @Override public void onCustomAction(String action) {
                 if (ACTION_STOP.equals(action)) Player.get().stop(PlayerService.this);
             }
         });
         session.setSessionActivity(contentIntent());
         session.setActive(true);
         IntentFilter filter = new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(noisyReceiver, filter, RECEIVER_NOT_EXPORTED);
-        else registerReceiver(noisyReceiver, filter);
+        registerNoisyReceiver(filter);
         Player.get().addListener(this);
         startForeground(NOTI_ID, buildNotification());
         refresh();
+    }
+
+    /** API33 的 registerReceiver(receiver, filter, flags) 在 API16 里不存在，反射调用。 */
+    private void registerNoisyReceiver(IntentFilter filter) {
+        if (Build.VERSION.SDK_INT >= 33) {
+            try {
+                Context.class.getMethod("registerReceiver", BroadcastReceiver.class,
+                                IntentFilter.class, int.class)
+                        .invoke(this, noisyReceiver, filter,
+                                Integer.valueOf(RECEIVER_NOT_EXPORTED));
+                return;
+            } catch (Throwable ignored) {
+                // 落回老签名。
+            }
+        }
+        registerReceiver(noisyReceiver, filter);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -163,11 +225,12 @@ public class PlayerService extends Service implements Player.Listener {
         destroyed = true;
         handler.removeCallbacks(expirePaused);
         Player.get().removeListener(this);
-        unregisterReceiver(noisyReceiver);
-        if (session != null) {
-            session.setActive(false);
-            session.release();
+        try {
+            unregisterReceiver(noisyReceiver);
+        } catch (Throwable ignored) {
+            // 注册失败过就别在销毁时再炸一次。
         }
+        if (session != null) session.release();
         instance = null;
         Player.get().releaseForService();
         stopForeground(true);
@@ -178,46 +241,42 @@ public class PlayerService extends Service implements Player.Listener {
 
     private void publishState() {
         Player player = Player.get();
-        int state;
+        String state;
         switch (player.state()) {
-            case Player.LOADING: state = PlaybackState.STATE_BUFFERING; break;
-            case Player.PLAYING: state = PlaybackState.STATE_PLAYING; break;
-            case Player.PAUSED: state = PlaybackState.STATE_PAUSED; break;
-            case Player.ERROR: state = PlaybackState.STATE_ERROR; break;
-            default: state = PlaybackState.STATE_STOPPED;
+            case Player.LOADING: state = "STATE_BUFFERING"; break;
+            case Player.PLAYING: state = "STATE_PLAYING"; break;
+            case Player.PAUSED: state = "STATE_PAUSED"; break;
+            case Player.ERROR: state = "STATE_ERROR"; break;
+            default: state = "STATE_STOPPED";
         }
-        PlaybackState.Builder builder = new PlaybackState.Builder()
-                .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE
-                        | PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_SKIP_TO_NEXT
-                        | PlaybackState.ACTION_SKIP_TO_PREVIOUS | PlaybackState.ACTION_SEEK_TO
-                        | PlaybackState.ACTION_STOP)
-                .addCustomAction(ACTION_STOP, "停止", android.R.drawable.ic_menu_close_clear_cancel)
-                .setState(state, player.position(), player.isPlaying() ? 1f : 0f,
-                        SystemClock.elapsedRealtime());
-        if (player.state() == Player.ERROR) builder.setErrorMessage(player.error());
-        session.setPlaybackState(builder.build());
+        session.setPlaybackState(state, player.position(), player.isPlaying() ? 1f : 0f,
+                player.state() == Player.ERROR ? player.error() : "");
     }
 
     private void refresh() {
-        if (session == null) return;
         Player player = Player.get();
         Book book = player.book();
         Chapter chapter = player.chapter();
         loadArtwork(book);
-        MediaMetadata.Builder metadata = new MediaMetadata.Builder()
-                .putString(MediaMetadata.METADATA_KEY_TITLE, book == null ? "拾音" : book.title)
-                .putString(MediaMetadata.METADATA_KEY_ALBUM, book == null ? "拾音" : book.title)
-                .putString(MediaMetadata.METADATA_KEY_ARTIST, chapter == null ? "" : chapter.title)
-                .putString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE, book == null ? "拾音" : book.title)
-                .putString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE, chapter == null ? "" : chapter.title)
-                .putLong(MediaMetadata.METADATA_KEY_DURATION, player.duration());
-        if (artwork != null) {
-            metadata.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, artwork);
-            metadata.putBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON, artwork);
-        }
-        session.setMetadata(metadata.build());
+        session.setMetadata(book == null ? "拾音" : book.title,
+                book == null ? "拾音" : book.title,
+                chapter == null ? "" : chapter.title,
+                chapter == null ? "" : chapter.title,
+                player.duration(), artwork);
         publishState();
-        getSystemService(NotificationManager.class).notify(NOTI_ID, buildNotification());
+        notifyNotification();
+    }
+
+    private void notifyNotification() {
+        if (destroyed) return;
+        NotificationManager manager =
+                (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager == null) return;
+        try {
+            manager.notify(NOTI_ID, buildNotification());
+        } catch (Throwable ignored) {
+            // 通知刷新失败不影响播放。
+        }
     }
 
     @Override public void onState(int state, String message) {
@@ -227,24 +286,25 @@ public class PlayerService extends Service implements Player.Listener {
         }
         refresh();
     }
+
     @Override public void onTrack(int index, Chapter chapter) { refresh(); }
+
     @Override public void onProgress(int positionMs, int durationMs) {
         long now = SystemClock.elapsedRealtime();
         if (now - lastPositionUpdate >= 1000) {
             lastPositionUpdate = now;
-            if (session != null) publishState();
+            publishState();
         }
         if (now - lastNotificationUpdate >= 5000) {
             lastNotificationUpdate = now;
-            if (!destroyed) getSystemService(NotificationManager.class)
-                    .notify(NOTI_ID, buildNotification());
+            notifyNotification();
         }
     }
 
     private static PendingIntent action(Context context, String action) {
         Intent intent = new Intent(context, PlayerService.class).setAction(action);
         return PendingIntent.getService(context, action.hashCode(), intent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                PendingIntents.updateCurrent());
     }
 
     private Notification buildNotification() {
@@ -258,27 +318,26 @@ public class PlayerService extends Service implements Player.Listener {
                 : playing ? "正在播放" : "已暂停";
         if (player.duration() > 0) status += " · " + Ui.timeMs(player.position())
                 + " / " + Ui.timeMs(player.duration());
-        Notification.Builder builder = Build.VERSION.SDK_INT >= 26
-                ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
+        Notification.Builder builder = NotiCompat.builder(this, CHANNEL);
         builder.setSmallIcon(android.R.drawable.ic_media_play)
                 .setContentTitle(player.book() == null ? "拾音" : player.book().title)
                 .setContentText(chapter == null ? "未在播放" : chapter.title)
-                .setContentIntent(content)
                 .setDeleteIntent(action(this, ACTION_STOP))
                 .setSubText(status)
-                .setLargeIcon(artwork)
-                .setColor(0xFFF5A524)
-                .setCategory(Notification.CATEGORY_TRANSPORT)
                 .setOngoing(playing || player.state() == Player.LOADING)
-                .setOnlyAlertOnce(true).setShowWhen(false)
-                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setOnlyAlertOnce(true)
                 .addAction(android.R.drawable.ic_media_previous, "上一集", action(this, ACTION_PREV))
                 .addAction(pauseAction ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play,
                         pauseAction ? "暂停" : "播放", action(this, ACTION_TOGGLE))
                 .addAction(android.R.drawable.ic_media_next, "下一集", action(this, ACTION_NEXT))
-                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "停止", action(this, ACTION_STOP))
-                .setStyle(new Notification.MediaStyle().setMediaSession(session.getSessionToken())
-                        .setShowActionsInCompactView(0, 1, 2));
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "停止", action(this, ACTION_STOP));
+        // TV 包可能拿不到启动页，拿不到就不挂点击，通知照样能用按钮。
+        if (content != null) builder.setContentIntent(content);
+        NotiCompat.setLargeIcon(builder, artwork);
+        NotiCompat.setShowWhen(builder, false);
+        NotiCompat.setColor(builder, 0xFFF5A524);
+        NotiCompat.setTransportCategory(builder);
+        NotiCompat.setMediaStyle(builder, session.token(), 0, 1, 2);
         return builder.build();
     }
 }

@@ -1,16 +1,14 @@
 package com.shiyin.app.play;
 
 import android.content.Context;
-import android.media.AudioAttributes;
 import android.media.MediaPlayer;
 import android.media.AudioManager;
-import android.media.AudioFocusRequest;
-import android.os.Build;
 import android.os.SystemClock;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
 
+import com.shiyin.app.compat.AudioCompat;
 import com.shiyin.app.model.Book;
 import com.shiyin.app.model.Chapter;
 import com.shiyin.app.source.Source;
@@ -72,14 +70,18 @@ public final class Player {
     private int loadToken = 0;
     private Context appContext;
     private AudioManager audioManager;
-    private AudioFocusRequest focusRequest;
+    /** API26+ 是 AudioFocusRequest，更低版本为 null；只用于配对释放。 */
+    private Object focusToken;
     private boolean hasFocus;
     private boolean resumeAfterFocus;
     private boolean playWhenReady = true;
     private long lastProgressSave;
-    private final AudioAttributes audioAttributes = new AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_MEDIA)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
+    /**
+     * AudioAttributes 是 API21 的类，不能写成字段初始化器——那样类一实例化就在
+     * Android 4.1 上 NoClassDefFoundError。这里只存 Object，真正构造推迟到播放时。
+     */
+    private Object audioAttributes;
+    private boolean audioAttributesResolved;
 
     private final AudioManager.OnAudioFocusChangeListener focusListener =
             new AudioManager.OnAudioFocusChangeListener() {
@@ -101,6 +103,14 @@ public final class Player {
         }
     };
 
+    private Object audioAttributes() {
+        if (!audioAttributesResolved) {
+            audioAttributesResolved = true;
+            audioAttributes = AudioCompat.speechAttributes();
+        }
+        return audioAttributes;
+    }
+
     private boolean requestFocus() {
         if (hasFocus) return true;
         if (appContext == null) return false;
@@ -108,32 +118,19 @@ public final class Player {
             audioManager = (AudioManager) appContext.getSystemService(Context.AUDIO_SERVICE);
         }
         if (audioManager == null) return false;
-        int result;
-        if (Build.VERSION.SDK_INT >= 26) {
-            if (focusRequest == null) {
-                focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                        .setAudioAttributes(audioAttributes)
-                        .setWillPauseWhenDucked(true)
-                        .setOnAudioFocusChangeListener(focusListener, ui).build();
-            }
-            result = audioManager.requestAudioFocus(focusRequest);
-        } else {
-            result = audioManager.requestAudioFocus(focusListener,
-                    AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
-        }
-        hasFocus = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+        AudioCompat.Focus focus = AudioCompat.request(audioManager, focusListener, ui,
+                audioAttributes());
+        if (focus.token != null) focusToken = focus.token;
+        hasFocus = focus.granted;
         return hasFocus;
     }
 
     private void abandonFocus() {
         resumeAfterFocus = false;
         if (audioManager != null) {
-            if (Build.VERSION.SDK_INT >= 26 && focusRequest != null) {
-                audioManager.abandonAudioFocusRequest(focusRequest);
-            } else {
-                audioManager.abandonAudioFocus(focusListener);
-            }
+            AudioCompat.abandon(audioManager, focusListener, focusToken);
         }
+        focusToken = null;
         hasFocus = false;
     }
 
@@ -445,7 +442,7 @@ public final class Player {
         releasePlayer();
         try {
             mp = new MediaPlayer();
-            mp.setAudioAttributes(audioAttributes);
+            AudioCompat.applyAttributes(mp, audioAttributes());
             mp.setWakeMode(ctx.getApplicationContext(), PowerManager.PARTIAL_WAKE_LOCK);
             mp.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
                 @Override
