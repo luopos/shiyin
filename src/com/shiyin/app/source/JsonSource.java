@@ -355,7 +355,8 @@ public final class JsonSource extends Source {
         return expand(text(block, "url"), vars);
     }
 
-    private static String expand(String template, Map<String, String> vars) {
+    /** 公开给单测：验证 URL 模板替换后不会因特殊字符被截断。 */
+    public static String expand(String template, Map<String, String> vars) {
         if (template == null) return "";
         String out = template;
         for (Map.Entry<String, String> e : vars.entrySet()) {
@@ -364,16 +365,19 @@ public final class JsonSource extends Source {
         return out;
     }
 
-    private static Map<String, String> vars(Object... pairs) {
+    /** 公开给单测：验证章节 id 里的 # 被正确编码。 */
+    public static Map<String, String> vars(Object... pairs) {
         Map<String, String> out = new HashMap<>();
         for (int i = 0; i + 1 < pairs.length; i += 2) {
             Object value = pairs[i + 1];
             String text = value == null ? "" : String.valueOf(value);
-            if ("kw".equals(pairs[i]) || "cat".equals(pairs[i])) {
-                try {
-                    text = URLEncoder.encode(text, "UTF-8");
-                } catch (Exception ignored) {
-                }
+            // 所有变量都要编码：源3 的章节 id 形如 "3071503616#1"，
+            // 不编码时 # 会被当成 URL fragment 截断，服务端收到缺 ID → 502「章节标识无效」。
+            try {
+                // URLEncoder 会把空格变成 '+'，查询串里这样也可接受；
+                // 关键是 # & 空格 这些会破坏 URL 结构的字符必须转义。
+                text = URLEncoder.encode(text, "UTF-8");
+            } catch (Exception ignored) {
             }
             out.put(String.valueOf(pairs[i]), text);
         }

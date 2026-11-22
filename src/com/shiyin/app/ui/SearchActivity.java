@@ -11,6 +11,7 @@ import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.shiyin.app.kid.KidMode;
@@ -34,6 +35,7 @@ public class SearchActivity extends Activity {
     private ListView lv;
     private LinearLayout chipBox;
     private TextView status;
+    private LinearLayout historyBox;
     private BookAdapter adapter;
 
     private final List<Source> pool = new ArrayList<>();
@@ -159,6 +161,16 @@ public class SearchActivity extends Activity {
         lv.setAdapter(adapter);
         root.addView(lv);
 
+        // 历史区：跟结果列表互斥显示。历史项是关键词，不该借用书目行的封面位。
+        ScrollView historyScroll = new ScrollView(this);
+        historyScroll.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        historyBox = new LinearLayout(this);
+        historyBox.setOrientation(LinearLayout.VERTICAL);
+        historyBox.setVisibility(View.GONE);
+        historyScroll.addView(historyBox);
+        root.addView(historyScroll);
+
         return root;
     }
 
@@ -184,31 +196,44 @@ public class SearchActivity extends Activity {
         }
     }
 
+    /**
+     * 搜索历史：关键词列表，不是书目列表。
+     *
+     * <p>之前把每个关键词包成一个 {@code Book} 塞进书籍列表，
+     * 于是每条都占一个封面位却没有任何封面 —— 用户看到的就是一排空白方块。
+     * 现在直接用关键词行渲染，列表也换成独立模式，避免跟书目混在一起。
+     */
     private void showHistory() {
         List<String> his = Prefs.searchHistory();
         if (his.isEmpty()) {
             status.setText("输入关键词，或者直接粘一个 RSS 链接");
+            showHistoryRows(false);
+            return;
+        }
+        status.setText("搜索历史 · 点一下直接搜");
+        showHistoryRows(true);
+    }
+
+    private void showHistoryRows(boolean visible) {
+        if (historyBox == null) return;
+        historyBox.removeAllViews();
+        if (!visible) {
+            historyBox.setVisibility(View.GONE);
+            lv.setVisibility(View.VISIBLE);
             adapter.set(null);
             return;
         }
-        status.setText("搜索历史");
-        List<Book> rows = new ArrayList<>();
-        for (String h : his) {
-            Book b = new Book("", "", h);
-            b.bookUrl = "__kw__";
-            rows.add(b);
-        }
-        adapter.set(rows);
-        lv.setOnItemClickListener(new android.widget.AdapterView.OnItemClickListener() {
-            @Override
-            public void onItemClick(android.widget.AdapterView<?> p, View v, int pos, long id) {
-                Book b = adapter.getItem(pos);
-                if ("__kw__".equals(b.bookUrl)) {
-                    input.setText(b.title);
+        historyBox.setVisibility(View.VISIBLE);
+        lv.setVisibility(View.GONE);
+        for (final String kw : Prefs.searchHistory()) {
+            historyBox.addView(Widgets.historyRow(this, kw, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    input.setText(kw);
                     doSearch();
                 }
-            }
-        });
+            }));
+        }
     }
 
     private void openBook(Book b) {
@@ -239,49 +264,166 @@ public class SearchActivity extends Activity {
             if (one != null) targets.add(one);
         }
         if (targets.isEmpty()) {
-            status.setText("还没有内容源。到「我的 → 内容源」添加订阅后再搜");
+            boolean kid = KidMode.enabled();
+            status.setText(kid
+                    ? "青少年模式下没有可搜索的儿童分类\n去「我的 → 内容源」换一个带儿童分类的订阅"
+                    : "还没有内容源。到「我的 → 内容源」添加订阅后再搜");
+            adapter.set(null);
             return;
         }
 
         final boolean kid = KidMode.enabled();
-        if (kid && targets.isEmpty()) {
-            status.setText("青少年模式下暂无可搜索的儿童分类");
-            return;
-        }
-
+        // 从历史态切回结果态，否则搜索完成后列表仍是隐藏的，用户看不到结果
+        if (historyBox != null) historyBox.setVisibility(View.GONE);
+        lv.setVisibility(View.VISIBLE);
         status.setText(kid
-                ? "正在儿童分类里搜 " + kw + " …"
-                : "正在搜 " + kw + " …");
+                ? "正在儿童分类里搜「" + kw + "」…"
+                : "正在搜「" + kw + "」…");
         adapter.set(null);
 
         final List<Book> merged = Collections.synchronizedList(new ArrayList<Book>());
-        final int[] done = {0};
         final int total = targets.size();
+        final int[] finished = {0};
+        final int[] donePages = {0};
+        final int[] totalPages = {0};
+        final boolean[] anyError = {false};
 
         for (final Source s : targets) {
-            Bg.run(new Callable<List<Book>>() {
-                @Override
-                public List<Book> call() throws Exception {
-                    // 青少年模式只翻白名单分类做本地匹配：
-                    // 全站搜索拿不到分类信息，拦不住跨分类内容。
-                    return kid ? KidSearch.searchSource(s, kw) : s.search(kw, 1);
-                }
-            }, new Bg.Cb<List<Book>>() {
-                @Override
-                public void ok(List<Book> v) {
-                    if (generation != searchGeneration || isFinishing()) return;
-                    if (v != null) merged.addAll(v);
-                    done[0]++;
-                    flush(kw, merged, done[0], total);
-                }
+            if (kid) {
+                searchKidSource(s, kw, generation, merged, donePages, totalPages, anyError,
+                        finished, total);
+            } else {
+                searchWholeSource(s, kw, generation, merged, finished, total);
+            }
+        }
+    }
 
-                @Override
-                public void fail(Exception e) {
-                    if (generation != searchGeneration || isFinishing()) return;
-                    done[0]++;
-                    flush(kw, merged, done[0], total);
+    /**
+     * 青少年模式：分类内增量搜索。
+     *
+     * <p>每翻完一页就把累计命中刷到列表上，用户能边搜边看；
+     * 进度用「已扫页数 / 预计页数」表示，比原来干等一个转圈有用。
+     */
+    private void searchKidSource(final Source source, final String kw, final int generation,
+                                 final List<Book> merged, final int[] donePages,
+                                 final int[] totalPages, final boolean[] anyError,
+                                 final int[] finished, final int total) {
+        Bg.fire(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    KidSearch.searchSource(source, kw, KidSearch.MAX_PAGES_PER_CAT,
+                            new KidSearch.Listener() {
+                                @Override
+                                public void onPage(List<Book> hits, int done, int pages,
+                                                   boolean lastPage) {
+                                    if (generation != searchGeneration) return;
+                                    final int d = done;
+                                    final int p = pages;
+                                    Bg.ui(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            if (generation != searchGeneration || isFinishing()) {
+                                                return;
+                                            }
+                                            merged.clear();
+                                            merged.addAll(hits);
+                                            donePages[0] = d;
+                                            totalPages[0] = Math.max(p, d);
+                                            adapter.set(new ArrayList<Book>(merged));
+                                            if (merged.isEmpty()) {
+                                                status.setText("正在儿童分类里搜「" + kw
+                                                        + "」… 已扫 " + d + "/" + p + " 页");
+                                            } else {
+                                                status.setText("「" + kw + "」已找到 "
+                                                        + merged.size() + " 本 · 已扫 "
+                                                        + d + "/" + p + " 页");
+                                            }
+                                        }
+                                    });
+                                }
+
+                                @Override
+                                public void onDone(List<Book> hits, boolean err) {
+                                    if (generation != searchGeneration) return;
+                                    final boolean hadError = err;
+                                    Bg.ui(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            if (generation != searchGeneration || isFinishing()) {
+                                                return;
+                                            }
+                                            merged.clear();
+                                            merged.addAll(hits);
+                                            if (hadError) anyError[0] = true;
+                                            finished[0]++;
+                                            kidFinish(kw, merged, finished[0], total,
+                                                    anyError[0], totalPages[0]);
+                                        }
+                                    });
+                                }
+                            });
+                } catch (Exception e) {
+                    if (generation != searchGeneration) return;
+                    Bg.ui(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (generation != searchGeneration || isFinishing()) return;
+                            anyError[0] = true;
+                            finished[0]++;
+                            kidFinish(kw, merged, finished[0], total, true, totalPages[0]);
+                        }
+                    });
                 }
-            });
+            }
+        });
+    }
+
+    /** 普通模式：沿用全站搜索，一个源一次请求。 */
+    private void searchWholeSource(final Source source, final String kw, final int generation,
+                                   final List<Book> merged, final int[] finished, final int total) {
+        Bg.run(new Callable<List<Book>>() {
+            @Override
+            public List<Book> call() throws Exception {
+                return source.search(kw, 1);
+            }
+        }, new Bg.Cb<List<Book>>() {
+            @Override
+            public void ok(List<Book> v) {
+                if (generation != searchGeneration || isFinishing()) return;
+                if (v != null) merged.addAll(v);
+                finished[0]++;
+                flush(kw, merged, finished[0], total);
+            }
+
+            @Override
+            public void fail(Exception e) {
+                if (generation != searchGeneration || isFinishing()) return;
+                finished[0]++;
+                flush(kw, merged, finished[0], total);
+            }
+        });
+    }
+
+    /** 青少年模式收尾：所有源扫完才判定结果，0 命中必须给出明确反馈。 */
+    private void kidFinish(String kw, List<Book> merged, int done, int total,
+                           boolean anyError, int scannedPages) {
+        List<Book> view = KidMode.filterSearchResults(new ArrayList<>(merged));
+        adapter.set(view);
+        if (done < total) {
+            status.setText("已找到 " + view.size() + " 本 · 已搜 " + done + "/" + total + " 个源");
+            return;
+        }
+        if (!view.isEmpty()) {
+            status.setText("「" + kw + "」共 " + view.size() + " 本 · 仅儿童内容"
+                    + (anyError ? "（部分分类未取到）" : ""));
+            return;
+        }
+        // 0 命中：区分「扫过但没匹配」和「请求全挂了」，别让用户以为坏掉了
+        if (anyError) {
+            status.setText("「" + kw + "」没搜到，而且部分分类请求失败\n检查网络后重试，或换个关键词");
+        } else {
+            status.setText("「" + kw + "」在儿童分类里没有匹配的书\n青少年模式只搜儿童内容，换个关键词试试");
         }
     }
 

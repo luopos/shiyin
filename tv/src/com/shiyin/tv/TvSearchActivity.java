@@ -337,7 +337,7 @@ public class TvSearchActivity extends Activity {
     /* ---------------- 搜索 ---------------- */
 
     private void doSearch() {
-        String kw = query.toString().trim();
+        final String kw = query.toString().trim();
         if (kw.length() == 0) {
             statusView.setText("先输入关键词");
             statusView.setTextColor(Ui.RED);
@@ -346,7 +346,7 @@ public class TvSearchActivity extends Activity {
         if (searching) return;
         searching = true;
 
-        boolean kid = KidMode.enabled();
+        final boolean kid = KidMode.enabled();
         List<Source> pool = new ArrayList<Source>();
         for (Source s : Sources.searchable()) {
             // 青少年模式只保留有儿童分类的源
@@ -354,7 +354,9 @@ public class TvSearchActivity extends Activity {
         }
         if (pool.isEmpty()) {
             searching = false;
-            statusView.setText("当前没有可搜索的内容源，先到「我的」添加订阅");
+            statusView.setText(kid
+                    ? "青少年模式下没有可搜索的儿童分类，去「我的」换个带儿童分类的订阅"
+                    : "当前没有可搜索的内容源，先到「我的」添加订阅");
             statusView.setTextColor(Ui.RED);
             return;
         }
@@ -362,37 +364,166 @@ public class TvSearchActivity extends Activity {
         final int generation = ++searchGeneration;
         resultsBody.removeAllViews();
         resultsBody.addView(TvWidgets.loading(this, "正在搜索「" + kw + "」…"));
-        statusView.setText("搜索中…");
+        statusView.setText(kid
+                ? "正在儿童分类里搜「" + kw + "」…"
+                : "搜索中…");
         statusView.setTextColor(Ui.DIM2);
 
         final List<Book> merged = new ArrayList<Book>();
         final int[] done = {0};
+        final int[] anyError = {0};
         final int total = pool.size();
 
         for (final Source source : pool) {
-            Bg.run(new Callable<List<Book>>() {
-                @Override
-                public List<Book> call() throws Exception {
-                    // 青少年模式只翻白名单分类做本地匹配，杜绝跨分类内容
-                    return KidMode.enabled() ? KidSearch.searchSource(source, kw)
-                            : source.search(kw, 1);
-                }
-            }, new Bg.Cb<List<Book>>() {
-                @Override
-                public void ok(List<Book> value) {
-                    if (generation != searchGeneration || isFinishing()) return;
-                    if (value != null) merged.addAll(value);
-                    done[0]++;
-                    flush(kw, merged, done[0], total);
-                }
+            if (kid) {
+                searchKid(source, kw, generation, merged, done, anyError, total);
+            } else {
+                searchWhole(source, kw, generation, merged, done, total);
+            }
+        }
+    }
 
-                @Override
-                public void fail(Exception e) {
-                    if (generation != searchGeneration || isFinishing()) return;
-                    done[0]++;
-                    flush(kw, merged, done[0], total);
+    /** 青少年模式：分类内增量搜索，每翻完一页刷新一次结果与进度。 */
+    private void searchKid(final Source source, final String kw, final int generation,
+                           final List<Book> merged, final int[] done, final int[] anyError,
+                           final int total) {
+        Bg.fire(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    KidSearch.searchSource(source, kw, KidSearch.MAX_PAGES_PER_CAT,
+                            new KidSearch.Listener() {
+                                @Override
+                                public void onPage(List<Book> hits, int scanned, int pages,
+                                                   boolean hasNew) {
+                                    if (generation != searchGeneration) return;
+                                    final List<Book> snapshot = new ArrayList<Book>(hits);
+                                    final int sc = scanned;
+                                    final int pg = pages;
+                                    Bg.ui(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            if (generation != searchGeneration || isFinishing()) {
+                                                return;
+                                            }
+                                            // 边搜边出：把当前累计结果直接画出来
+                                            renderHits(kw, snapshot);
+                                            statusView.setText("「" + kw + "」已找到 "
+                                                    + snapshot.size() + " 本 · 已扫 "
+                                                    + sc + "/" + pg + " 页");
+                                            statusView.setTextColor(
+                                                    snapshot.isEmpty() ? Ui.DIM2 : Ui.TEAL);
+                                        }
+                                    });
+                                }
+
+                                @Override
+                                public void onDone(List<Book> hits, boolean err) {
+                                    if (generation != searchGeneration) return;
+                                    final List<Book> snapshot = new ArrayList<Book>(hits);
+                                    final boolean hadError = err;
+                                    Bg.ui(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            if (generation != searchGeneration || isFinishing()) {
+                                                return;
+                                            }
+                                            merged.clear();
+                                            merged.addAll(snapshot);
+                                            if (hadError) anyError[0] = 1;
+                                            done[0]++;
+                                            kidFinish(kw, merged, done[0], total,
+                                                    anyError[0] > 0);
+                                        }
+                                    });
+                                }
+                            });
+                } catch (Exception e) {
+                    if (generation != searchGeneration) return;
+                    Bg.ui(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (generation != searchGeneration || isFinishing()) return;
+                            anyError[0] = 1;
+                            done[0]++;
+                            kidFinish(kw, merged, done[0], total, true);
+                        }
+                    });
                 }
-            });
+            }
+        });
+    }
+
+    /** 普通模式：全站搜索。 */
+    private void searchWhole(final Source source, final String kw, final int generation,
+                             final List<Book> merged, final int[] done, final int total) {
+        Bg.run(new Callable<List<Book>>() {
+            @Override
+            public List<Book> call() throws Exception {
+                return source.search(kw, 1);
+            }
+        }, new Bg.Cb<List<Book>>() {
+            @Override
+            public void ok(List<Book> value) {
+                if (generation != searchGeneration || isFinishing()) return;
+                if (value != null) merged.addAll(value);
+                done[0]++;
+                flush(kw, merged, done[0], total);
+            }
+
+            @Override
+            public void fail(Exception e) {
+                if (generation != searchGeneration || isFinishing()) return;
+                done[0]++;
+                flush(kw, merged, done[0], total);
+            }
+        });
+    }
+
+    /** 把累计命中画到结果区；空列表时清空，避免残留上一次的结果。 */
+    private void renderHits(String kw, List<Book> hits) {
+        resultsBody.removeAllViews();
+        if (hits.isEmpty()) {
+            resultsBody.addView(TvWidgets.loading(this, "正在儿童分类里搜「" + kw + "」…"));
+            return;
+        }
+        LinearLayout list = TvWidgets.vbox(this);
+        for (final Book book : hits) {
+            list.addView(TvWidgets.bookRow(this, book, new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    Nav.openDetail(TvSearchActivity.this, book);
+                }
+            }));
+        }
+        resultsBody.addView(list);
+    }
+
+    /** 青少年模式收尾：0 命中必须给出明确反馈，并区分「没匹配」和「请求失败」。 */
+    private void kidFinish(String kw, List<Book> merged, int done, int total, boolean anyError) {
+        if (done < total) {
+            statusView.setText("已找到 " + merged.size() + " 本 · 已搜 " + done + "/" + total
+                    + " 个源");
+            return;
+        }
+        searching = false;
+        if (!merged.isEmpty()) {
+            statusView.setText("「" + kw + "」共 " + merged.size() + " 本 · 仅儿童内容"
+                    + (anyError ? "（部分分类未取到）" : ""));
+            statusView.setTextColor(Ui.TEAL);
+            renderHits(kw, merged);
+            return;
+        }
+        if (anyError) {
+            statusView.setText("「" + kw + "」没搜到，而且部分分类请求失败，检查网络后重试");
+            statusView.setTextColor(Ui.RED);
+            resultsBody.removeAllViews();
+            resultsBody.addView(TvWidgets.empty(this, "搜索失败\n请检查网络后重试"));
+        } else {
+            statusView.setText("「" + kw + "」在儿童分类里没有匹配的书，换个关键词试试");
+            statusView.setTextColor(Ui.TEAL);
+            resultsBody.removeAllViews();
+            resultsBody.addView(TvWidgets.empty(this, "没有找到\n青少年模式只搜儿童内容"));
         }
     }
 

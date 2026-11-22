@@ -70,6 +70,42 @@ public final class Widgets {
 
     /* ---------------- 横版书行（列表里用） ---------------- */
 
+    /**
+     * 搜索历史行：只有关键词，没有封面。
+     *
+     * <p>历史项不是书目，之前复用 {@link #bookRow} 会占一个 58x77 的封面位、
+     * 显示成空白方块。这里改成放大镜图标 + 关键词，语义和视觉都对齐。
+     */
+    public static View historyRow(Context c, String keyword, View.OnClickListener onClick) {
+        LinearLayout row = new LinearLayout(c);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setPadding(Ui.dp(c, 14), Ui.dp(c, 12), Ui.dp(c, 14), Ui.dp(c, 12));
+        row.setLayoutParams(new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        row.setClickable(true);
+        row.setOnClickListener(onClick);
+        row.setBackground(ripple(Ui.BG));
+
+        TextView icon = Ui.text(c, "\uD83D\uDD0D", 13f, Ui.DIM2);
+        icon.setLayoutParams(new LinearLayout.LayoutParams(Ui.dp(c, 24),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        row.addView(icon);
+
+        TextView t = Ui.text(c, keyword, 14.5f, Ui.TEXT);
+        t.setMaxLines(1);
+        t.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        lp.leftMargin = Ui.dp(c, 8);
+        t.setLayoutParams(lp);
+        row.addView(t);
+
+        TextView arrow = Ui.text(c, "\u203A", 15f, Ui.DIM2);
+        row.addView(arrow);
+        return row;
+    }
+
     public static View bookRow(Context c, Book b, View.OnClickListener onClick) {
         LinearLayout row = new LinearLayout(c);
         row.setOrientation(LinearLayout.HORIZONTAL);

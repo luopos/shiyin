@@ -302,6 +302,57 @@ public final class KidModeTest extends Instrumentation {
         equal(0, com.shiyin.app.kid.KidSearch.searchSource(fake, "   ").size(),
                 "空关键词不搜");
 
+        // 13d. 源3 播放故障回归：章节 id 含 #，不编码会被当成 URL fragment 截断
+        java.util.Map<String, String> sv =
+                com.shiyin.app.source.JsonSource.vars("chapterId", "3071503616#1");
+        check("3071503616%231".equals(sv.get("chapterId")),
+                "章节 id 的 # 必须编码成 %23");
+        String playUrl = com.shiyin.app.source.JsonSource.expand(
+                "https://x/api/play?id={chapterId}", sv);
+        check(playUrl.indexOf('#') < 0, "拼出的 URL 不含裸 #（否则会被截断）");
+        check(playUrl.contains("%231"), "URL 里保留完整的章节标识");
+
+        // 普通 id 与关键词不受影响
+        java.util.Map<String, String> sv2 =
+                com.shiyin.app.source.JsonSource.vars("id", "3071503616", "kw", "故事");
+        check("3071503616".equals(sv2.get("id")), "纯数字 id 编码后不变");
+        check(sv2.get("kw").length() > 0, "关键词正常编码");
+
+        // 13e. 增量搜索回调：必须逐页回调，且最终 onDone 一定触发
+        final int[] pages = {0};
+        final int[] dones = {0};
+        com.shiyin.app.kid.KidSearch.searchSource(fake, "故事", 1,
+                new com.shiyin.app.kid.KidSearch.Listener() {
+                    @Override
+                    public void onPage(java.util.List<Book> hits, int done, int total,
+                                       boolean hasNew) {
+                        pages[0]++;
+                    }
+
+                    @Override
+                    public void onDone(java.util.List<Book> hits, boolean anyError) {
+                        dones[0]++;
+                    }
+                });
+        check(pages[0] > 0, "增量搜索至少回调一次 onPage");
+        equal(1, dones[0], "onDone 恰好回调一次");
+
+        // 0 命中也必须回调 onDone（用户要求「搜不到也要有反馈」）
+        final int[] emptyDone = {0};
+        com.shiyin.app.kid.KidSearch.searchSource(fake, "绝对不存在的词", 1,
+                new com.shiyin.app.kid.KidSearch.Listener() {
+                    @Override
+                    public void onPage(java.util.List<Book> hits, int done, int total,
+                                       boolean hasNew) {
+                    }
+
+                    @Override
+                    public void onDone(java.util.List<Book> hits, boolean anyError) {
+                        emptyDone[0]++;
+                    }
+                });
+        equal(1, emptyDone[0], "0 命中时 onDone 依然回调，UI 才能给反馈");
+
         // 10/11/12 分类过滤
         List<Cat> lrts = lrtsTree();
         List<Cat> lrtsFiltered = KidMode.filterCategories("lrts", lrts);
