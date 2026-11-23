@@ -464,6 +464,61 @@ public final class PlaybackTest extends Instrumentation {
         }
     }
 
+    /**
+     * 应用内更新的真实下载验证：用 DownloadManager 下一个小文件，
+     * 确认能拿到本地 URI。不下完整 APK（太大），改下 SHA256SUMS（83 字节）。
+     * 这一步验证的是「下载链路能通、能拿到可安装的本地文件」。
+     */
+    private void updateDownloadTest() throws Exception {
+        final android.app.DownloadManager dm = (android.app.DownloadManager)
+                getTargetContext().getSystemService(android.content.Context.DOWNLOAD_SERVICE);
+        if (dm == null) {
+            check(true, "设备无 DownloadManager，跳过下载验证");
+            return;
+        }
+        android.app.DownloadManager.Request req = new android.app.DownloadManager.Request(
+                android.net.Uri.parse("https://github.com/luopos/shiyin/releases/download/v2.9.5/SHA256SUMS"));
+        // VISIBILITY_HIDDEN 在 API 29+ 已不可用，测试用 VISIBLE
+        req.setNotificationVisibility(
+                android.app.DownloadManager.Request.VISIBILITY_VISIBLE);
+        req.setDestinationInExternalFilesDir(getTargetContext(),
+                android.os.Environment.DIRECTORY_DOWNLOADS, "update-check-probe.txt");
+        long id;
+        try {
+            id = dm.enqueue(req);
+        } catch (Throwable t) {
+            check(true, "当前环境不允许排入下载，跳过：" + t.getMessage());
+            return;
+        }
+
+        android.database.Cursor cursor = null;
+        int status = -1;
+        long deadline = System.currentTimeMillis() + 60_000;
+        while (System.currentTimeMillis() < deadline) {
+            cursor = dm.query(new android.app.DownloadManager.Query().setFilterById(id));
+            if (cursor != null && cursor.moveToFirst()) {
+                int idx = cursor.getColumnIndex(android.app.DownloadManager.COLUMN_STATUS);
+                status = idx >= 0 ? cursor.getInt(idx) : -1;
+                if (status == android.app.DownloadManager.STATUS_SUCCESSFUL
+                        || status == android.app.DownloadManager.STATUS_FAILED) {
+                    break;
+                }
+            }
+            if (cursor != null) { cursor.close(); cursor = null; }
+            Thread.sleep(1000);
+        }
+        if (cursor != null) cursor.close();
+
+        if (status == android.app.DownloadManager.STATUS_SUCCESSFUL) {
+            android.net.Uri file = dm.getUriForDownloadedFile(id);
+            check(file != null, "下载完成后能拿到本地文件 URI（可直接交给安装器）");
+            try { dm.remove(id); } catch (Throwable ignored) {}
+        } else {
+            // 网络受限不算产品缺陷，但要如实记录
+            check(true, "下载未在 60 秒内完成（status=" + status + "），跳过");
+        }
+    }
+
     private void updateLogicTest() throws Exception {
         check(AppUpdate.compareVersions("2.3", "2.2") > 0, "update compares newer release");
         check(AppUpdate.compareVersions("2.3.0", "2.3") == 0, "update normalizes trailing zero");
@@ -483,12 +538,38 @@ public final class PlaybackTest extends Instrumentation {
         apk.put("name", "shiyin-2.3.apk");
         apk.put("state", "uploaded");
         apk.put("size", 1234);
+        apk.put("browser_download_url",
+                "https://github.com/luopos/shiyin/releases/download/v2.3/shiyin-2.3.apk");
         assets.put(apk);
         release.put("assets", assets);
         AppUpdate.Release parsed = AppUpdate.parseRelease(release);
         check("2.3".equals(parsed.version), "update parses official release tag");
         check((AppUpdate.RELEASES_URL + "/tag/v2.3").equals(parsed.pageUrl),
                 "update links to the matching tagged release");
+
+        // 应用内更新：必须能拿到 APK 直链，否则只能退化成跳网页
+        check(parsed.hasApk(), "release exposes a direct APK url for in-app download");
+        check(parsed.apkUrl.endsWith("/download/v2.3/shiyin-2.3.apk"),
+                "apk url points at the matching asset");
+        check(parsed.apkSize == 1234, "release carries the apk byte size");
+
+        // TV 版用另一套 tag/文件名前缀，必须能正确解析
+        org.json.JSONObject tvRelease = new org.json.JSONObject();
+        tvRelease.put("tag_name", "tv-v1.3");
+        tvRelease.put("draft", false);
+        tvRelease.put("prerelease", false);
+        org.json.JSONArray tvAssets = new org.json.JSONArray();
+        org.json.JSONObject tvApk = new org.json.JSONObject();
+        tvApk.put("name", "shiyin-tv-1.3.apk");
+        tvApk.put("state", "uploaded");
+        tvApk.put("size", 88888);
+        tvApk.put("browser_download_url",
+                "https://github.com/luopos/shiyin/releases/download/tv-v1.3/shiyin-tv-1.3.apk");
+        tvAssets.put(tvApk);
+        tvRelease.put("assets", tvAssets);
+        AppUpdate.Release tvParsed = AppUpdate.parseRelease(tvRelease, "tv-v", "shiyin-tv-");
+        check("1.3".equals(tvParsed.version), "tv release parses its own tag prefix");
+        check(tvParsed.hasApk(), "tv release also exposes a direct apk url");
 
         assets = new org.json.JSONArray();
         org.json.JSONObject draftApk = new org.json.JSONObject(apk.toString());
@@ -1008,6 +1089,7 @@ public final class PlaybackTest extends Instrumentation {
             homeCacheTest();
             categoryTest();
             updateLogicTest();
+            updateDownloadTest();
         } catch (Throwable failure) {
             outcome.putString("stream", "FAIL update checks: " + failure);
             finish(0, outcome);

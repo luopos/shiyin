@@ -32,10 +32,11 @@ done
 PYTHON=python
 command -v python >/dev/null 2>&1 || PYTHON=python3
 command -v "$PYTHON" >/dev/null 2>&1 || { echo "缺少 python/python3" >&2; exit 1; }
+# AppUpdate 的 HTML 兜底依赖 jsoup，TV 端复用同一份实现，classpath 也要带上
 if command -v cygpath >/dev/null; then
-    CP="$(cygpath -m "$PLATFORM/android.jar")"
+    CP="$(cygpath -m "$PLATFORM/android.jar");$(cygpath -m "$PWD/../libs/jsoup.jar")"
 else
-    CP="$PLATFORM/android.jar"
+    CP="$PLATFORM/android.jar:$PWD/../libs/jsoup.jar"
 fi
 abspath() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 
@@ -56,6 +57,8 @@ SHARED=(
     "../src/com/shiyin/app/source/ChapterRepository.java"
     "../src/com/shiyin/app/store/Prefs.java"
     "../src/com/shiyin/app/net/Http.java"
+    "../src/com/shiyin/app/net/AppUpdate.java"
+    "../src/com/shiyin/app/net/UpdateInstaller.java"
     "../src/com/shiyin/app/util/Bg.java"
     "../src/com/shiyin/app/util/Ui.java"
     "../src/com/shiyin/app/util/ImgView.java"
@@ -119,9 +122,11 @@ echo "== 3/7 编译 Java（-source 8，API16 可运行） =="
 
 echo "== 4/7 生成 DEX（d8 --min-api 16） =="
 "$JAR" cf "$OUT/program.jar" -C "$OUT/classes" .
+# jsoup 也要一起进 dex：AppUpdate 的 HTML 兜底在运行时需要它
 "$JAVA" -Xmx1536M -cp "$(abspath "$BT/lib/d8.jar")" com.android.tools.r8.D8 \
     --lib "$(abspath "$PLATFORM/android.jar")" --min-api 16 \
-    --output "$(abspath "$PWD/$OUT/dex")" "$(abspath "$PWD/$OUT/program.jar")"
+    --output "$(abspath "$PWD/$OUT/dex")" \
+    "$(abspath "$PWD/$OUT/program.jar")" "$(abspath "$PWD/../libs/jsoup.jar")"
 
 echo "== 5/7 封装 APK =="
 TV_OUT_DIR="$OUT" "$PYTHON" - <<'PY'

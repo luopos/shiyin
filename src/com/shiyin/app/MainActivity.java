@@ -25,6 +25,7 @@ import com.shiyin.app.kid.KidMode;
 import com.shiyin.app.model.Book;
 import com.shiyin.app.model.Cat;
 import com.shiyin.app.net.AppUpdate;
+import com.shiyin.app.net.UpdateInstaller;
 import com.shiyin.app.play.Player;
 import com.shiyin.app.source.Source;
 import com.shiyin.app.source.Sources;
@@ -1385,8 +1386,7 @@ public class MainActivity extends Activity implements Player.Listener, KidMode.L
                     return;
                 }
                 if (comparison > 0) {
-                    showUpdateDialog("发现新版本", "当前版本：" + version + "\n可更新到："
-                            + release.version, release.pageUrl);
+                    showInstallDialog(version, release);
                 } else {
                     showUpdateDialog(comparison == 0 ? "已是最新版本" : "当前版本比正式发布更新",
                             "当前版本：" + version + "\nGitHub 正式版本：" + release.version,
@@ -1406,6 +1406,42 @@ public class MainActivity extends Activity implements Player.Listener, KidMode.L
         if (request != updateRequestGeneration) return false;
         checkingUpdate = false;
         return !isFinishing() && !isDestroyed() && tab == 3;
+    }
+
+    /**
+     * 发现新版本：优先应用内下载安装。
+     *
+     * <p>拿得到 APK 直链就用 DownloadManager 在应用内下载，下完直接拉起安装器，
+     * 不跳浏览器。拿不到直链（比如 API 限流后走 HTML 兜底失败）才退回发布页。
+     */
+    private void showInstallDialog(final String currentVersion, final AppUpdate.Release release) {
+        String size = release.apkSize > 0
+                ? String.format(java.util.Locale.US, "%.1f MB", release.apkSize / 1048576.0)
+                : "未知大小";
+        String message = "当前版本：" + currentVersion
+                + "\n可更新到：" + release.version
+                + "\n安装包大小：" + size
+                + "\n\n点「立即更新」会在后台下载，完成后自动弹出安装。"
+                + "\n订阅、书架和设置都会保留。";
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle("发现新版本 " + release.version)
+                .setMessage(message)
+                .setNegativeButton("稍后再说", null);
+
+        if (release.hasApk()) {
+            builder.setNeutralButton("打开发布页", (dialog, which) -> openProjectPage(release.pageUrl));
+            builder.setPositiveButton("立即更新", (dialog, which) -> {
+                if (!UpdateInstaller.start(MainActivity.this, release)) {
+                    Ui.toast(MainActivity.this, "无法开始下载，改为打开发布页");
+                    openProjectPage(release.pageUrl);
+                }
+            });
+        } else {
+            // 没直链时不要假装能内部更新
+            builder.setPositiveButton("打开发布页", (dialog, which) -> openProjectPage(release.pageUrl));
+        }
+        builder.show();
     }
 
     private void showUpdateDialog(String title, String message, String pageUrl) {

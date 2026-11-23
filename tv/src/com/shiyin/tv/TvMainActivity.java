@@ -83,6 +83,8 @@ public class TvMainActivity extends Activity {
     private List<Cat> catRoots = new ArrayList<>();
     private Cat openRoot;
     private int catChipIndex;
+    /** 防重复点击「检查更新」。 */
+    private boolean checkingUpdate;
     private Cat catLeaf;
     private final List<Book> catBooks = new ArrayList<>();
     private LinearLayout gridBody;
@@ -1468,14 +1470,98 @@ public class TvMainActivity extends Activity {
         }
     }
 
+    /** 检查 TV 版更新，支持应用内下载安装。 */
     private void checkUpdate() {
-        new AlertDialog.Builder(this)
-                .setTitle("版本信息")
-                .setMessage("拾音 TV " + packageVersion() + "\n"
-                        + "TV 版按构建分发，暂不联网检查更新。\n"
-                        + "订阅内容会每 24 小时自动刷新。")
-                .setPositiveButton("知道了", null)
-                .show();
+        if (checkingUpdate) return;
+        checkingUpdate = true;
+        final String current = packageVersion();
+        Ui.toast(this, "正在检查更新…");
+        Bg.run(new java.util.concurrent.Callable<com.shiyin.app.net.AppUpdate.Release>() {
+            @Override
+            public com.shiyin.app.net.AppUpdate.Release call() throws Exception {
+                return com.shiyin.app.net.AppUpdate.latestTv();
+            }
+        }, new Bg.Cb<com.shiyin.app.net.AppUpdate.Release>() {
+            @Override
+            public void ok(final com.shiyin.app.net.AppUpdate.Release release) {
+                if (isFinishing()) return;
+                checkingUpdate = false;
+                int cmp;
+                try {
+                    cmp = com.shiyin.app.net.AppUpdate.compareVersions(release.version, current);
+                } catch (Exception e) {
+                    showVersionDialog("无法比较版本",
+                            "当前版本：" + current + "\n最新版本：" + release.version, null);
+                    return;
+                }
+                if (cmp > 0) {
+                    String size = release.apkSize > 0
+                            ? String.format(java.util.Locale.US, "%.1f MB",
+                                    release.apkSize / 1048576.0)
+                            : "未知大小";
+                    showVersionDialog("发现新版本 " + release.version,
+                            "当前版本：" + current + "\n可更新到：" + release.version
+                                    + "\n安装包大小：" + size
+                                    + "\n\n点「立即更新」后台下载，完成后自动弹出安装。",
+                            release);
+                } else {
+                    showVersionDialog(cmp == 0 ? "已是最新版本" : "当前版本比正式发布更新",
+                            "当前版本：" + current + "\n最新版本：" + release.version, null);
+                }
+            }
+
+            @Override
+            public void fail(Exception e) {
+                if (isFinishing()) return;
+                checkingUpdate = false;
+                showVersionDialog("检查更新失败", messageOf(e), null);
+            }
+        });
+    }
+
+    /** 版本信息弹窗；传 release 时给「立即更新」，否则只有「关闭」。 */
+    private void showVersionDialog(String title, String message,
+                                   final com.shiyin.app.net.AppUpdate.Release release) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle(title).setMessage(message)
+                .setNegativeButton("关闭", null);
+        if (release != null) {
+            if (release.hasApk()) {
+                builder.setNeutralButton("打开发布页", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int w) {
+                        openUrl(release.pageUrl);
+                    }
+                });
+                builder.setPositiveButton("立即更新", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int w) {
+                        if (!com.shiyin.app.net.UpdateInstaller.start(
+                                TvMainActivity.this, release)) {
+                            Ui.toast(TvMainActivity.this, "无法开始下载，改为打开发布页");
+                            openUrl(release.pageUrl);
+                        }
+                    }
+                });
+            } else {
+                builder.setPositiveButton("打开发布页", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int w) {
+                        openUrl(release.pageUrl);
+                    }
+                });
+            }
+        }
+        builder.show();
+    }
+
+    private void openUrl(String url) {
+        try {
+            startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                    android.net.Uri.parse(url)));
+        } catch (Throwable t) {
+            Ui.toast(this, "打不开链接：" + url);
+        }
     }
 
     private String packageVersion() {
